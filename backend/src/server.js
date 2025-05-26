@@ -22,13 +22,17 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
-    methods: ["GET", "POST"]
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -43,9 +47,14 @@ app.use('/api/friends', authenticateToken, friendRoutes);
 app.use('/api/rooms', authenticateToken, roomRoutes);
 app.use('/api/users', authenticateToken, usersRoutes);
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-  console.log('New client connected');
+  console.log('User connected:', socket.id);
 
   socket.on('join-room', (roomId, userId) => {
     socket.join(roomId);
@@ -65,12 +74,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('Client disconnected');
+    console.log('User disconnected:', socket.id);
   });
 });
 
 const PORT = process.env.PORT || 5001;
 
 server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 }); 
