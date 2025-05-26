@@ -7,9 +7,9 @@ import {
   Text,
   Container,
 } from '@chakra-ui/react';
-import { VStack } from '@chakra-ui/layout';
-import { FormControl, FormLabel } from '@chakra-ui/form-control';
-import { useToast } from '@chakra-ui/toast';
+import { VStack } from '@chakra-ui/react';
+import { FormControl, FormLabel } from '@chakra-ui/react';
+import { useToast } from '@chakra-ui/react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
