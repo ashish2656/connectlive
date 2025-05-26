@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
+import Cookies from 'js-cookie';
 
 // Default API URL if environment variable is not set
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
@@ -17,10 +18,17 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (username: string, email: string, password: string) => Promise<void>;
   logout: () => void;
-  isLoading: boolean;
+  isAuthenticated: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+// Cookie configuration
+const COOKIE_OPTIONS = {
+  expires: 7, // 7 days
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'strict' as const
+};
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -31,31 +39,48 @@ export const useAuth = () => {
 };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(() => {
+    const savedUser = Cookies.get('user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
+  
+  const [token, setToken] = useState<string | null>(() => {
+    return Cookies.get('token') || null;
+  });
+
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return !!Cookies.get('token');
+  });
 
   useEffect(() => {
-    const initAuth = async () => {
-      const storedToken = localStorage.getItem('token');
-      if (storedToken) {
+    // Verify token and fetch user data on mount
+    const verifyAuth = async () => {
+      const savedToken = Cookies.get('token');
+      if (savedToken) {
         try {
           const response = await axios.get(`${API_URL}/api/auth/profile`, {
-            headers: { Authorization: `Bearer ${storedToken}` }
+            headers: { Authorization: `Bearer ${savedToken}` }
           });
           setUser(response.data);
-          setToken(storedToken);
+          setToken(savedToken);
+          setIsAuthenticated(true);
         } catch (error) {
-          localStorage.removeItem('token');
-          setToken(null);
-          setUser(null);
+          console.error('Token verification failed:', error);
+          handleLogout();
         }
       }
-      setIsLoading(false);
     };
 
-    initAuth();
+    verifyAuth();
   }, []);
+
+  const handleLogout = () => {
+    setUser(null);
+    setToken(null);
+    setIsAuthenticated(false);
+    Cookies.remove('user');
+    Cookies.remove('token');
+  };
 
   const login = async (email: string, password: string) => {
     try {
@@ -63,11 +88,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email,
         password
       });
+
       const { token: newToken, user: userData } = response.data;
-      localStorage.setItem('token', newToken);
+
+      // Save to cookies
+      Cookies.set('token', newToken, COOKIE_OPTIONS);
+      Cookies.set('user', JSON.stringify(userData), COOKIE_OPTIONS);
+
+      // Update state
       setToken(newToken);
       setUser(userData);
-    } catch (error) {
+      setIsAuthenticated(true);
+
+      // Set default authorization header for all future requests
+      axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+    } catch (error: any) {
+      if (error.response?.data?.message) {
+        throw new Error(error.response.data.message);
+      }
       throw error;
     }
   };
@@ -79,23 +117,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email,
         password
       });
+
       const { token: newToken, user: userData } = response.data;
-      localStorage.setItem('token', newToken);
+
+      // Save to cookies
+      Cookies.set('token', newToken, COOKIE_OPTIONS);
+      Cookies.set('user', JSON.stringify(userData), COOKIE_OPTIONS);
+
+      // Update state
       setToken(newToken);
       setUser(userData);
-    } catch (error) {
+      setIsAuthenticated(true);
+
+      // Set default authorization header for all future requests
+      axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+    } catch (error: any) {
+      if (error.response?.data?.message) {
+        throw new Error(error.response.data.message);
+      }
       throw error;
     }
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    setToken(null);
-    setUser(null);
+    handleLogout();
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, register, logout, isLoading }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        login,
+        register,
+        logout,
+        isAuthenticated
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

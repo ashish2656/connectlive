@@ -1,8 +1,10 @@
 const express = require('express');
 const router = express.Router();
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
+const { authenticateToken } = require('../middleware/auth');
 
 // Validation middleware
 const registerValidation = [
@@ -17,19 +19,16 @@ const loginValidation = [
 ];
 
 // Register route
-router.post('/register', registerValidation, async (req, res) => {
+router.post('/register', async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
     const { username, email, password } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ $or: [{ email }, { username }] });
     if (existingUser) {
-      return res.status(400).json({ message: 'User already exists' });
+      return res.status(400).json({
+        message: existingUser.email === email ? 'Email already registered' : 'Username already taken'
+      });
     }
 
     // Create new user
@@ -43,85 +42,89 @@ router.post('/register', registerValidation, async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign(
-      { userId: user._id, email: user.email },
+      { userId: user._id },
       process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '24h' }
+      { expiresIn: '7d' }
     );
 
+    // Send response without password
+    const userResponse = {
+      id: user._id,
+      username: user.username,
+      email: user.email,
+      friendCode: user.friendCode
+    };
+
     res.status(201).json({
-      message: 'User created successfully',
+      message: 'User registered successfully',
       token,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        friendCode: user.friendCode
-      }
+      user: userResponse
     });
   } catch (error) {
-    res.status(500).json({ message: 'Error creating user', error: error.message });
+    res.status(500).json({ message: 'Error registering user', error: error.message });
   }
 });
 
 // Login route
-router.post('/login', loginValidation, async (req, res) => {
+router.post('/login', async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
     const { email, password } = req.body;
 
-    // Find user
+    // Find user by email
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     // Check password
-    const isValidPassword = await user.comparePassword(password);
+    const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Invalid email or password' });
     }
 
     // Generate JWT token
     const token = jwt.sign(
-      { userId: user._id, email: user.email },
+      { userId: user._id },
       process.env.JWT_SECRET || 'your-secret-key',
-      { expiresIn: '24h' }
+      { expiresIn: '7d' }
     );
+
+    // Send response without password
+    const userResponse = {
+      id: user._id,
+      username: user.username,
+      email: user.email,
+      friendCode: user.friendCode
+    };
 
     res.json({
       message: 'Login successful',
       token,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        friendCode: user.friendCode
-      }
+      user: userResponse
     });
   } catch (error) {
     res.status(500).json({ message: 'Error logging in', error: error.message });
   }
 });
 
-// Get user profile route
-router.get('/profile', async (req, res) => {
+// Get user profile
+router.get('/profile', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select('-password');
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
-    res.json({
+
+    const userResponse = {
       id: user._id,
       username: user.username,
       email: user.email,
       friendCode: user.friendCode
-    });
+    };
+
+    res.json(userResponse);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching profile', error: error.message });
+    res.status(500).json({ message: 'Error fetching user profile', error: error.message });
   }
 });
 
