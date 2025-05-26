@@ -2,6 +2,27 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 
+// Get user profile
+router.get('/profile', async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const userResponse = {
+      id: user._id,
+      username: user.username,
+      email: user.email,
+      friendCode: user.friendCode
+    };
+
+    res.json(userResponse);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching user profile', error: error.message });
+  }
+});
+
 // Search users by username
 router.get('/search', async (req, res) => {
   try {

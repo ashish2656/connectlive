@@ -107,25 +107,11 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Get user profile
-router.get('/profile', authenticateToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const userResponse = {
-      id: user._id,
-      username: user.username,
-      email: user.email,
-      friendCode: user.friendCode
-    };
-
-    res.json(userResponse);
-  } catch (error) {
-    res.status(500).json({ message: 'Error fetching user profile', error: error.message });
-  }
+// Logout route
+router.post('/logout', authenticateToken, (req, res) => {
+  // Since we're using JWT, we don't need to do anything server-side
+  // The client will handle removing the token
+  res.json({ message: 'Logged out successfully' });
 });
 
 module.exports = router; 
