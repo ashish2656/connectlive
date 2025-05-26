@@ -75,7 +75,11 @@ interface PeerConnection {
 // Add interface for room users
 interface RoomUser {
   userId: string;
-  username?: string;
+  username: string;
+  isAudioEnabled: boolean;
+  isVideoEnabled: boolean;
+  isScreenSharing: boolean;
+  isHandRaised: boolean;
 }
 
 const MotionBox = motion(Box);
@@ -145,7 +149,7 @@ const Meeting: React.FC = () => {
         console.log('Connecting to socket server:', SOCKET_SERVER);
         socketRef.current = io(SOCKET_SERVER, {
           withCredentials: true,
-          transports: ['websocket', 'polling'], // Try WebSocket first, fallback to polling
+          transports: ['websocket', 'polling'],
         });
 
         // Socket event handlers
@@ -174,42 +178,70 @@ const Meeting: React.FC = () => {
 
         socketRef.current.on('user-joined', ({ userId, username }) => {
           console.log('User joined:', userId, username);
-          setParticipants(prev => [...prev, {
-            id: userId,
-            username: username || 'Anonymous',
-            isAudioEnabled: true,
-            isVideoEnabled: true,
-            isScreenSharing: false,
-            isHandRaised: false
-          }]);
+          setParticipants(prev => {
+            // Check if participant already exists
+            if (prev.some(p => p.id === userId)) {
+              return prev;
+            }
+            return [...prev, {
+              id: userId,
+              username: username || 'Anonymous',
+              isAudioEnabled: true,
+              isVideoEnabled: true,
+              isScreenSharing: false,
+              isHandRaised: false
+            }];
+          });
         });
 
         socketRef.current.on('room-users', (users: RoomUser[]) => {
           console.log('Room users:', users);
-          setParticipants(users.map(user => ({
+          // Filter out the current user from the participants list
+          const otherUsers = users.filter(user => user.userId !== user?.id);
+          setParticipants(otherUsers.map(user => ({
             id: user.userId,
             username: user.username || 'Anonymous',
-            isAudioEnabled: true,
-            isVideoEnabled: true,
-            isScreenSharing: false,
-            isHandRaised: false
+            isAudioEnabled: user.isAudioEnabled,
+            isVideoEnabled: user.isVideoEnabled,
+            isScreenSharing: user.isScreenSharing,
+            isHandRaised: user.isHandRaised
           })));
         });
 
-        // Handle receiving returned signal
-        socketRef.current.on('receiving-returned-signal', ({ signal, id }) => {
-          const item = peersRef.current.find(p => p.peerId === id);
-          item?.peer.signal(signal);
+        socketRef.current.on('user-disconnected', (userId: string) => {
+          console.log('User disconnected:', userId);
+          setParticipants(prev => prev.filter(p => p.id !== userId));
         });
 
-        // Handle user disconnect
-        socketRef.current.on('user-disconnected', userId => {
-          const peerConnection = peersRef.current.find(p => p.peerId === userId);
-          if (peerConnection) {
-            peerConnection.peer.destroy();
-            peersRef.current = peersRef.current.filter(p => p.peerId !== userId);
-            setParticipants(prev => prev.filter(p => p.id !== userId));
-          }
+        socketRef.current.on('user-media-toggle', ({ userId, type, enabled }) => {
+          setParticipants(prev => prev.map(p => {
+            if (p.id === userId) {
+              return {
+                ...p,
+                isAudioEnabled: type === 'audio' ? enabled : p.isAudioEnabled,
+                isVideoEnabled: type === 'video' ? enabled : p.isVideoEnabled
+              };
+            }
+            return p;
+          }));
+        });
+
+        socketRef.current.on('user-screen-share', ({ userId, isSharing }) => {
+          setParticipants(prev => prev.map(p => {
+            if (p.id === userId) {
+              return { ...p, isScreenSharing: isSharing };
+            }
+            return p;
+          }));
+        });
+
+        socketRef.current.on('user-hand-raised', ({ userId, isRaised }) => {
+          setParticipants(prev => prev.map(p => {
+            if (p.id === userId) {
+              return { ...p, isHandRaised: isRaised };
+            }
+            return p;
+          }));
         });
 
         setIsLoading(false);
@@ -287,6 +319,12 @@ const Meeting: React.FC = () => {
         track.enabled = !isAudioEnabled;
       });
       setIsAudioEnabled(!isAudioEnabled);
+      socketRef.current?.emit('toggle-media', {
+        userId: user?.id,
+        roomId: meetingId,
+        type: 'audio',
+        enabled: !isAudioEnabled
+      });
     }
   };
 
@@ -296,6 +334,12 @@ const Meeting: React.FC = () => {
         track.enabled = !isVideoEnabled;
       });
       setIsVideoEnabled(!isVideoEnabled);
+      socketRef.current?.emit('toggle-media', {
+        userId: user?.id,
+        roomId: meetingId,
+        type: 'video',
+        enabled: !isVideoEnabled
+      });
     }
   };
 
@@ -364,7 +408,11 @@ const Meeting: React.FC = () => {
 
   const toggleHandRaise = () => {
     setIsHandRaised(!isHandRaised);
-    socketRef.current?.emit('hand-raised', { userId: user?.id, isRaised: !isHandRaised });
+    socketRef.current?.emit('hand-raised', {
+      userId: user?.id,
+      roomId: meetingId,
+      isRaised: !isHandRaised
+    });
   };
 
   const handleSendMessage = () => {

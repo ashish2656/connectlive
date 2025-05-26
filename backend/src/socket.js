@@ -3,36 +3,72 @@ const { Server } = require('socket.io');
 const initializeSocket = (server) => {
   const io = new Server(server, {
     cors: {
-      origin: ["http://localhost:5173", "https://connectlive-psi.vercel.app"],
+      origin: ["http://localhost:5173", "https://connectlive-app.netlify.app"],
       methods: ["GET", "POST"],
       credentials: true
     }
   });
 
+  // Store rooms with participant details
   const rooms = new Map();
 
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('join-room', ({ roomId, userId }) => {
+    socket.on('join-room', ({ roomId, userId, username }) => {
       socket.join(roomId);
       
+      // Initialize room if it doesn't exist
       if (!rooms.has(roomId)) {
-        rooms.set(roomId, new Set());
+        rooms.set(roomId, new Map());
       }
-      rooms.get(roomId).add(userId);
+
+      // Store user details in the room
+      rooms.get(roomId).set(userId, {
+        socketId: socket.id,
+        username: username,
+        isAudioEnabled: true,
+        isVideoEnabled: true,
+        isScreenSharing: false,
+        isHandRaised: false
+      });
 
       // Notify others in the room
       socket.to(roomId).emit('user-joined', {
         userId,
-        username: socket.username
+        username,
+        socketId: socket.id
       });
 
       // Send list of connected users to the new participant
-      const participants = Array.from(rooms.get(roomId));
-      socket.emit('room-users', participants);
+      const participants = Array.from(rooms.get(roomId).entries()).map(([userId, user]) => ({
+        userId,
+        username: user.username,
+        isAudioEnabled: user.isAudioEnabled,
+        isVideoEnabled: user.isVideoEnabled,
+        isScreenSharing: user.isScreenSharing,
+        isHandRaised: user.isHandRaised
+      }));
+      
+      io.to(socket.id).emit('room-users', participants);
+      console.log(`User ${username} (${userId}) joined room ${roomId}`);
+    });
 
-      console.log(`User ${userId} joined room ${roomId}`);
+    socket.on('disconnect', () => {
+      // Find and remove user from their room
+      rooms.forEach((participants, roomId) => {
+        participants.forEach((user, userId) => {
+          if (user.socketId === socket.id) {
+            participants.delete(userId);
+            socket.to(roomId).emit('user-disconnected', userId);
+            console.log(`User ${user.username} (${userId}) left room ${roomId}`);
+          }
+        });
+        // Clean up empty rooms
+        if (participants.size === 0) {
+          rooms.delete(roomId);
+        }
+      });
     });
 
     socket.on('sending-signal', ({ userToSignal, signal }) => {
@@ -44,33 +80,41 @@ const initializeSocket = (server) => {
     });
 
     socket.on('send-message', (message) => {
-      const roomId = Array.from(socket.rooms)[1]; // First room is socket's own room
+      const roomId = Array.from(socket.rooms)[1];
       if (roomId) {
         socket.to(roomId).emit('receive-message', message);
       }
     });
 
-    socket.on('hand-raised', ({ userId, isRaised }) => {
-      const roomId = Array.from(socket.rooms)[1];
-      if (roomId) {
-        socket.to(roomId).emit('user-hand-raised', { userId, isRaised });
+    socket.on('hand-raised', ({ userId, isRaised, roomId }) => {
+      if (roomId && rooms.has(roomId)) {
+        const participant = rooms.get(roomId).get(userId);
+        if (participant) {
+          participant.isHandRaised = isRaised;
+          socket.to(roomId).emit('user-hand-raised', { userId, isRaised });
+        }
       }
     });
 
-    socket.on('disconnect', () => {
-      console.log('User disconnected:', socket.id);
-      
-      // Remove user from all rooms
-      rooms.forEach((users, roomId) => {
-        if (users.has(socket.id)) {
-          users.delete(socket.id);
-          socket.to(roomId).emit('user-disconnected', socket.id);
-          
-          if (users.size === 0) {
-            rooms.delete(roomId);
-          }
+    socket.on('toggle-media', ({ userId, roomId, type, enabled }) => {
+      if (roomId && rooms.has(roomId)) {
+        const participant = rooms.get(roomId).get(userId);
+        if (participant) {
+          if (type === 'audio') participant.isAudioEnabled = enabled;
+          if (type === 'video') participant.isVideoEnabled = enabled;
+          socket.to(roomId).emit('user-media-toggle', { userId, type, enabled });
         }
-      });
+      }
+    });
+
+    socket.on('toggle-screen-share', ({ userId, roomId, isSharing }) => {
+      if (roomId && rooms.has(roomId)) {
+        const participant = rooms.get(roomId).get(userId);
+        if (participant) {
+          participant.isScreenSharing = isSharing;
+          socket.to(roomId).emit('user-screen-share', { userId, isSharing });
+        }
+      }
     });
   });
 
