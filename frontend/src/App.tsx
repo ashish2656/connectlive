@@ -10,6 +10,7 @@ import Register from './pages/Register';
 import Home from './pages/Home';
 import Friends from './pages/Friends';
 import Profile from './pages/Profile';
+import Meeting from './pages/Meeting';
 
 const App: React.FC = () => {
   return (
@@ -41,6 +42,14 @@ const App: React.FC = () => {
                 element={
                   <PrivateRoute>
                     <Profile />
+                  </PrivateRoute>
+                }
+              />
+              <Route
+                path="/meeting/:meetingId"
+                element={
+                  <PrivateRoute>
+                    <Meeting />
                   </PrivateRoute>
                 }
               />
