@@ -8,7 +8,6 @@ import PrivateRoute from './components/PrivateRoute';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Home from './pages/Home';
-import Room from './pages/Room';
 import Friends from './pages/Friends';
 import Profile from './pages/Profile';
 
@@ -42,14 +41,6 @@ const App: React.FC = () => {
                 element={
                   <PrivateRoute>
                     <Profile />
-                  </PrivateRoute>
-                }
-              />
-              <Route
-                path="/room/:roomId"
-                element={
-                  <PrivateRoute>
-                    <Room />
                   </PrivateRoute>
                 }
               />

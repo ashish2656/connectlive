@@ -27,21 +27,13 @@ const allowedOrigins = [
   'https://connectlive-psi.vercel.app',
   'https://connectlive.vercel.app',
   'https://connectlive-git-main-ashishs-projects-9530e095.vercel.app',
+  'https://connectlive-np2kfuavr-ashishs-projects-9530e095.vercel.app',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
 // CORS Middleware with detailed configuration
 app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
+  origin: '*', // Allow all origins temporarily for debugging
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
@@ -52,7 +44,7 @@ app.use(cors({
 // Socket.IO Configuration
 const io = socketIo(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: '*', // Allow all origins temporarily for debugging
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true

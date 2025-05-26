@@ -37,41 +37,15 @@ interface SearchUser {
   friendCode: string;
 }
 
-interface Room {
-  _id: string;
-  name: string;
-  roomId: string;
-  host: string;
-}
-
 const Profile: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchUser[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [rooms, setRooms] = useState<Room[]>([]);
   const { user, token } = useAuth();
   const { friends, friendRequests, acceptFriendRequest, rejectFriendRequest, sendFriendRequest } = useFriends();
   const toast = useToast();
 
   const pendingRequests = friendRequests.filter(request => request.status === 'pending');
-
-  // Fetch user's rooms
-  useEffect(() => {
-    const fetchRooms = async () => {
-      try {
-        const response = await axios.get(`${API_URL}/api/rooms`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        setRooms(response.data.filter((room: Room) => room.host === user?.id));
-      } catch (error) {
-        console.error('Error fetching rooms:', error);
-      }
-    };
-
-    if (token) {
-      fetchRooms();
-    }
-  }, [token, user?.id]);
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
@@ -156,31 +130,6 @@ const Profile: React.FC = () => {
     }
   };
 
-  const handleInviteToRoom = async (friendId: string, roomId: string) => {
-    try {
-      await axios.post(
-        `${API_URL}/api/rooms/${roomId}/invite`,
-        { userId: friendId },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      toast({
-        title: 'Success',
-        description: 'Invitation sent successfully',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: error.response?.data?.message || 'Failed to send invitation',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    }
-  };
-
   const isAlreadyFriend = (userId: string) => {
     return friends.some(friend => friend._id === userId);
   };
@@ -243,30 +192,6 @@ const Profile: React.FC = () => {
                           </Text>
                         </VStack>
                       </HStack>
-                      <Menu>
-                        <MenuButton
-                          as={Button}
-                          rightIcon={<ChevronDownIcon />}
-                          colorScheme="brand"
-                          size="sm"
-                        >
-                          Invite to Room
-                        </MenuButton>
-                        <MenuList>
-                          {rooms.length > 0 ? (
-                            rooms.map((room) => (
-                              <MenuItem
-                                key={room._id}
-                                onClick={() => handleInviteToRoom(friend._id, room.roomId)}
-                              >
-                                {room.name}
-                              </MenuItem>
-                            ))
-                          ) : (
-                            <MenuItem isDisabled>No rooms available</MenuItem>
-                          )}
-                        </MenuList>
-                      </Menu>
                     </HStack>
                   </CardBody>
                 </Card>
