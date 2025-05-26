@@ -3,7 +3,11 @@ const { Server } = require('socket.io');
 const initializeSocket = (server) => {
   const io = new Server(server, {
     cors: {
-      origin: ["http://localhost:5173", "https://connectlive-app.netlify.app"],
+      origin: [
+        "http://localhost:5173",
+        "https://connectlive-app.netlify.app",
+        "https://frabjous-praline-6015b8.netlify.app"
+      ],
       methods: ["GET", "POST"],
       credentials: true,
       allowedHeaders: ["Content-Type", "Authorization"]

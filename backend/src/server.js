@@ -26,12 +26,22 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
   'https://connectlive-app.netlify.app',
+  'https://frabjous-praline-6015b8.netlify.app',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
 // CORS Middleware with detailed configuration
 app.use(cors({
-  origin: allowedOrigins,
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
