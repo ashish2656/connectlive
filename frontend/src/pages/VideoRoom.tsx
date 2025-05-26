@@ -420,18 +420,18 @@ const VideoRoom: React.FC = () => {
           </Grid>
         </Box>
 
-        {/* Right Sidebar */}
+        {/* Right Sidebar - Participants List */}
         <Box
           w="300px"
           h="full"
           bg={sidebarBg}
           borderLeft="1px"
           borderColor={borderColor}
-          p={4}
+          overflowY="auto"
         >
-          <VStack spacing={4} h="full">
-            <Text fontSize="lg" fontWeight="bold">Participants</Text>
-            <List spacing={2} w="full">
+          <VStack p={4} spacing={4} align="stretch">
+            <Text fontSize="lg" fontWeight="bold">Participants ({participants.length})</Text>
+            <List spacing={2}>
               {participants.map(participant => (
                 <ListItem
                   key={participant.id}
@@ -445,8 +445,10 @@ const VideoRoom: React.FC = () => {
                   <Flex align="center" gap={3}>
                     <Avatar size="sm" name={participant.username} />
                     <Box flex={1}>
-                      <Text>{participant.username} {participant.id === user?.id ? '(You)' : ''}</Text>
-                      <HStack spacing={1}>
+                      <Text fontWeight="medium">
+                        {participant.username} {participant.id === user?.id ? '(You)' : ''}
+                      </Text>
+                      <HStack spacing={1} mt={1}>
                         {!participant.audioEnabled && (
                           <Badge colorScheme="red" variant="subtle">Muted</Badge>
                         )}
@@ -465,7 +467,7 @@ const VideoRoom: React.FC = () => {
 
             <Divider />
 
-            <Box w="full">
+            <Box>
               <Text fontSize="lg" fontWeight="bold" mb={2}>Quick Actions</Text>
               <VStack spacing={2}>
                 <Button
@@ -473,6 +475,7 @@ const VideoRoom: React.FC = () => {
                   leftIcon={<Box as={focusedParticipant ? UsersIcon : ShareIcon} w={5} h={5} />}
                   onClick={() => setFocusedParticipant(null)}
                   variant="outline"
+                  colorScheme="brand"
                 >
                   {focusedParticipant ? 'Show All' : 'Share Screen'}
                 </Button>
@@ -481,6 +484,7 @@ const VideoRoom: React.FC = () => {
                   leftIcon={<Box as={ChatIcon} w={5} h={5} />}
                   onClick={onOpen}
                   variant="outline"
+                  colorScheme="brand"
                 >
                   Open Chat
                 </Button>
@@ -503,6 +507,7 @@ const VideoRoom: React.FC = () => {
         align="center"
         justify="center"
         gap={4}
+        zIndex={2}
       >
         <IconButton
           aria-label="Toggle microphone"
