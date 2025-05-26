@@ -25,6 +25,7 @@ import {
   Tooltip,
   useToast,
   useClipboard,
+  Spinner,
 } from '@chakra-ui/react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -71,6 +72,12 @@ interface PeerConnection {
   peer: Peer.Instance;
 }
 
+// Add interface for room users
+interface RoomUser {
+  userId: string;
+  username?: string;
+}
+
 const MotionBox = motion(Box);
 
 // Update the constant to use Vite's environment variables
@@ -109,40 +116,84 @@ const Meeting: React.FC = () => {
   const bgColor = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
 
+  // Add loading and error states
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
   // Initialize WebRTC and Socket connection
   useEffect(() => {
     const initializeMedia = async () => {
       try {
+        console.log('Initializing media...');
+        setIsLoading(true);
+        setError(null);
+
+        // Request media permissions
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
         });
+        console.log('Media stream obtained:', stream.id);
         streamRef.current = stream;
+        
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
+          console.log('Local video stream set');
         }
 
-        // Connect to socket server with the environment-specific URL
+        // Connect to socket server
+        console.log('Connecting to socket server:', SOCKET_SERVER);
         socketRef.current = io(SOCKET_SERVER, {
-          withCredentials: true
+          withCredentials: true,
+          transports: ['websocket', 'polling'], // Try WebSocket first, fallback to polling
         });
-        
-        // Join room
-        socketRef.current.emit('join-room', { roomId: meetingId, userId: user?.id });
 
-        // Handle new participant
+        // Socket event handlers
+        socketRef.current.on('connect', () => {
+          console.log('Socket connected:', socketRef.current?.id);
+          
+          // Join room after socket connection
+          socketRef.current?.emit('join-room', { 
+            roomId: meetingId, 
+            userId: user?.id,
+            username: user?.username 
+          });
+        });
+
+        socketRef.current.on('connect_error', (error) => {
+          console.error('Socket connection error:', error);
+          setError('Failed to connect to meeting server. Please try again.');
+          toast({
+            title: 'Connection Error',
+            description: 'Failed to connect to meeting server. Please try again.',
+            status: 'error',
+            duration: 5000,
+            isClosable: true,
+          });
+        });
+
         socketRef.current.on('user-joined', ({ userId, username }) => {
-          const peer = new Peer({
-            initiator: true,
-            trickle: false,
-            stream,
-          });
+          console.log('User joined:', userId, username);
+          setParticipants(prev => [...prev, {
+            id: userId,
+            username: username || 'Anonymous',
+            isAudioEnabled: true,
+            isVideoEnabled: true,
+            isScreenSharing: false,
+            isHandRaised: false
+          }]);
+        });
 
-          peer.on('signal', signal => {
-            socketRef.current?.emit('sending-signal', { userToSignal: userId, signal });
-          });
-
-          peersRef.current.push({ peerId: userId, peer });
+        socketRef.current.on('room-users', (users: RoomUser[]) => {
+          console.log('Room users:', users);
+          setParticipants(users.map(user => ({
+            id: user.userId,
+            username: user.username || 'Anonymous',
+            isAudioEnabled: true,
+            isVideoEnabled: true,
+            isScreenSharing: false,
+            isHandRaised: false
+          })));
         });
 
         // Handle receiving returned signal
@@ -161,13 +212,17 @@ const Meeting: React.FC = () => {
           }
         });
 
+        setIsLoading(false);
       } catch (error) {
-        console.error('Error accessing media devices:', error);
+        console.error('Error in initializeMedia:', error);
+        setError(error instanceof Error ? error.message : 'An unknown error occurred');
+        setIsLoading(false);
         toast({
-          title: 'Error accessing camera/microphone',
-          description: 'Please make sure you have granted permission to use media devices.',
+          title: 'Error',
+          description: error instanceof Error ? error.message : 'Failed to initialize meeting',
           status: 'error',
           duration: 5000,
+          isClosable: true,
         });
       }
     };
@@ -175,11 +230,21 @@ const Meeting: React.FC = () => {
     initializeMedia();
 
     return () => {
-      streamRef.current?.getTracks().forEach(track => track.stop());
-      socketRef.current?.disconnect();
-      peersRef.current.forEach(({ peer }) => peer.destroy());
+      console.log('Cleaning up media and socket connections...');
+      streamRef.current?.getTracks().forEach(track => {
+        console.log('Stopping track:', track.kind);
+        track.stop();
+      });
+      if (socketRef.current?.connected) {
+        console.log('Disconnecting socket');
+        socketRef.current.disconnect();
+      }
+      peersRef.current.forEach(({ peer }) => {
+        console.log('Destroying peer connection');
+        peer.destroy();
+      });
     };
-  }, [meetingId, user?.id]);
+  }, [meetingId, user?.id, user?.username, toast]);
 
   // Timer effect
   useEffect(() => {
@@ -358,322 +423,348 @@ const Meeting: React.FC = () => {
   };
 
   return (
-    <Flex h="100vh" bg={bgColor}>
-      {/* Meeting Code Display */}
-      <Box
-        position="absolute"
-        top={4}
-        left={4}
-        p={2}
-        bg="blackAlpha.600"
-        color="white"
-        borderRadius="md"
-        zIndex={10}
-      >
-        <HStack spacing={2}>
-          <Text>Meeting Code: {meetingId}</Text>
-          <IconButton
-            aria-label="Copy meeting code"
-            icon={<Box as={ClipboardIcon} w={4} h={4} />}
-            size="sm"
-            variant="ghost"
-            color="white"
-            onClick={onCopy}
-          />
-        </HStack>
-        {hasCopied && (
-          <Text fontSize="xs" color="green.200">
-            Copied to clipboard!
-          </Text>
-        )}
-      </Box>
+    <Flex h="100vh" bg={bgColor} direction="column">
+      {/* Loading and Error States */}
+      {isLoading && (
+        <Flex justify="center" align="center" flex={1}>
+          <VStack spacing={4}>
+            <Spinner size="xl" color="blue.500" thickness="4px" />
+            <Text fontSize="xl">Initializing meeting...</Text>
+          </VStack>
+        </Flex>
+      )}
 
-      {/* Left Side - Video Grid */}
-      <Box flex="1" p={4} borderRight="1px" borderColor={borderColor}>
-        <Grid
-          templateColumns="repeat(auto-fit, minmax(300px, 1fr))"
-          gap={4}
-          maxH="calc(100vh - 160px)"
-          overflowY="auto"
-          p={2}
-        >
-          {/* Local Video */}
-          <MotionBox
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            position="relative"
-            borderRadius="lg"
-            overflow="hidden"
-            bg="black"
+      {error && (
+        <Flex justify="center" align="center" flex={1}>
+          <VStack spacing={4}>
+            <Text color="red.500" fontSize="xl">{error}</Text>
+            <Button onClick={() => navigate('/')}>Return to Home</Button>
+          </VStack>
+        </Flex>
+      )}
+
+      {!isLoading && !error && (
+        <>
+          {/* Meeting Code Display */}
+          <Box
+            position="absolute"
+            top={4}
+            left={4}
+            p={2}
+            bg="blackAlpha.600"
+            color="white"
+            borderRadius="md"
+            zIndex={10}
           >
-            <video
-              ref={localVideoRef}
-              autoPlay
-              muted
-              playsInline
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-            <Box
-              position="absolute"
-              bottom={2}
-              left={2}
-              right={2}
-              px={2}
-              py={1}
-              bg="blackAlpha.600"
-              borderRadius="md"
-              color="white"
-            >
-              <Flex justify="space-between" align="center">
-                <Text fontSize="sm">{user?.username} (You)</Text>
-                <HStack spacing={1}>
-                  {!isAudioEnabled && <MicrophoneSlashIcon width={16} />}
-                  {!isVideoEnabled && <VideoCameraSlashIcon width={16} />}
-                </HStack>
+            <HStack spacing={2}>
+              <Text>Meeting Code: {meetingId}</Text>
+              <IconButton
+                aria-label="Copy meeting code"
+                icon={<Box as={ClipboardIcon} w={4} h={4} />}
+                size="sm"
+                variant="ghost"
+                color="white"
+                onClick={onCopy}
+              />
+            </HStack>
+            {hasCopied && (
+              <Text fontSize="xs" color="green.200">
+                Copied to clipboard!
+              </Text>
+            )}
+          </Box>
+
+          {/* Main Meeting Layout */}
+          <Flex flex={1}>
+            {/* Left Side - Video Grid */}
+            <Box flex={1} p={4} borderRight="1px" borderColor={borderColor}>
+              <Grid
+                templateColumns="repeat(auto-fit, minmax(300px, 1fr))"
+                gap={4}
+                maxH="calc(100vh - 160px)"
+                overflowY="auto"
+                p={2}
+              >
+                {/* Local Video */}
+                <MotionBox
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  position="relative"
+                  borderRadius="lg"
+                  overflow="hidden"
+                  bg="black"
+                >
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                  <Box
+                    position="absolute"
+                    bottom={2}
+                    left={2}
+                    right={2}
+                    px={2}
+                    py={1}
+                    bg="blackAlpha.600"
+                    borderRadius="md"
+                    color="white"
+                  >
+                    <Flex justify="space-between" align="center">
+                      <Text fontSize="sm">{user?.username} (You)</Text>
+                      <HStack spacing={1}>
+                        {!isAudioEnabled && <MicrophoneSlashIcon width={16} />}
+                        {!isVideoEnabled && <VideoCameraSlashIcon width={16} />}
+                      </HStack>
+                    </Flex>
+                  </Box>
+                </MotionBox>
+
+                {/* Other Participants */}
+                {participants.map(participant => (
+                  <MotionBox
+                    key={participant.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    position="relative"
+                    borderRadius="lg"
+                    overflow="hidden"
+                    bg="black"
+                  >
+                    <video
+                      autoPlay
+                      playsInline
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <Box
+                      position="absolute"
+                      bottom={2}
+                      left={2}
+                      right={2}
+                      px={2}
+                      py={1}
+                      bg="blackAlpha.600"
+                      borderRadius="md"
+                      color="white"
+                    >
+                      <Flex justify="space-between" align="center">
+                        <Text fontSize="sm">{participant.username}</Text>
+                        <HStack spacing={1}>
+                          {!participant.isAudioEnabled && <MicrophoneSlashIcon width={16} />}
+                          {!participant.isVideoEnabled && <VideoCameraSlashIcon width={16} />}
+                        </HStack>
+                      </Flex>
+                    </Box>
+                  </MotionBox>
+                ))}
+              </Grid>
+
+              {/* Bottom Controls */}
+              <Flex
+                position="fixed"
+                bottom={0}
+                left={0}
+                right={0}
+                h="80px"
+                bg={bgColor}
+                borderTop="1px"
+                borderColor={borderColor}
+                px={4}
+                align="center"
+                justify="center"
+                gap={4}
+              >
+                <Tooltip label={isAudioEnabled ? 'Mute' : 'Unmute'}>
+                  <IconButton
+                    aria-label="Toggle microphone"
+                    icon={isAudioEnabled ? <Box as={MicrophoneIcon} w={6} h={6} /> : <Box as={MicrophoneSlashIcon} w={6} h={6} />}
+                    colorScheme={isAudioEnabled ? 'gray' : 'red'}
+                    onClick={toggleAudio}
+                  />
+                </Tooltip>
+                <Tooltip label={isVideoEnabled ? 'Stop Video' : 'Start Video'}>
+                  <IconButton
+                    aria-label="Toggle camera"
+                    icon={isVideoEnabled ? <Box as={VideoCameraIcon} w={6} h={6} /> : <Box as={VideoCameraSlashIcon} w={6} h={6} />}
+                    colorScheme={isVideoEnabled ? 'gray' : 'red'}
+                    onClick={toggleVideo}
+                  />
+                </Tooltip>
+                <Tooltip label={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}>
+                  <IconButton
+                    aria-label="Share screen"
+                    icon={<Box as={ShareIcon} w={6} h={6} />}
+                    colorScheme={isScreenSharing ? 'brand' : 'gray'}
+                    onClick={toggleScreenShare}
+                  />
+                </Tooltip>
+                <Tooltip label={isRecording ? 'Stop Recording' : 'Start Recording'}>
+                  <IconButton
+                    aria-label="Record"
+                    icon={<Box as="span" w={3} h={3} borderRadius="full" bg={isRecording ? 'red.500' : 'gray.500'} />}
+                    colorScheme={isRecording ? 'red' : 'gray'}
+                    onClick={toggleRecording}
+                  />
+                </Tooltip>
+                <Tooltip label={isHandRaised ? 'Lower Hand' : 'Raise Hand'}>
+                  <IconButton
+                    aria-label="Raise hand"
+                    icon={<Box as={HandRaisedIcon} w={6} h={6} />}
+                    colorScheme={isHandRaised ? 'yellow' : 'gray'}
+                    onClick={toggleHandRaise}
+                  />
+                </Tooltip>
+                <Tooltip label="Leave Meeting">
+                  <IconButton
+                    aria-label="Leave meeting"
+                    icon={<Box as={PhoneIcon} w={6} h={6} transform="rotate(135deg)" />}
+                    colorScheme="red"
+                    onClick={handleLeaveMeeting}
+                  />
+                </Tooltip>
+
+                {/* Meeting Info */}
+                <Box position="absolute" left={4}>
+                  <Text fontSize="sm" color="gray.500">
+                    {formatTime(elapsedTime)}
+                  </Text>
+                </Box>
               </Flex>
             </Box>
-          </MotionBox>
 
-          {/* Other Participants */}
-          {participants.map(participant => (
-            <MotionBox
-              key={participant.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              position="relative"
-              borderRadius="lg"
-              overflow="hidden"
-              bg="black"
-            >
-              <video
-                autoPlay
-                playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-              <Box
-                position="absolute"
-                bottom={2}
-                left={2}
-                right={2}
-                px={2}
-                py={1}
-                bg="blackAlpha.600"
-                borderRadius="md"
-                color="white"
-              >
-                <Flex justify="space-between" align="center">
-                  <Text fontSize="sm">{participant.username}</Text>
-                  <HStack spacing={1}>
-                    {!participant.isAudioEnabled && <MicrophoneSlashIcon width={16} />}
-                    {!participant.isVideoEnabled && <VideoCameraSlashIcon width={16} />}
-                  </HStack>
-                </Flex>
-              </Box>
-            </MotionBox>
-          ))}
-        </Grid>
+            {/* Right Side - Tabs */}
+            <Box w="350px" h="100%" bg={bgColor}>
+              <Tabs isFitted variant="enclosed">
+                <TabList>
+                  <Tab><Box as={UsersIcon} w={5} h={5} /></Tab>
+                  <Tab><Box as={ChatIcon} w={5} h={5} /></Tab>
+                  <Tab><Box as={PencilIcon} w={5} h={5} /></Tab>
+                </TabList>
 
-        {/* Bottom Controls */}
-        <Flex
-          position="fixed"
-          bottom={0}
-          left={0}
-          right={0}
-          h="80px"
-          bg={bgColor}
-          borderTop="1px"
-          borderColor={borderColor}
-          px={4}
-          align="center"
-          justify="center"
-          gap={4}
-        >
-          <Tooltip label={isAudioEnabled ? 'Mute' : 'Unmute'}>
-            <IconButton
-              aria-label="Toggle microphone"
-              icon={isAudioEnabled ? <Box as={MicrophoneIcon} w={6} h={6} /> : <Box as={MicrophoneSlashIcon} w={6} h={6} />}
-              colorScheme={isAudioEnabled ? 'gray' : 'red'}
-              onClick={toggleAudio}
-            />
-          </Tooltip>
-          <Tooltip label={isVideoEnabled ? 'Stop Video' : 'Start Video'}>
-            <IconButton
-              aria-label="Toggle camera"
-              icon={isVideoEnabled ? <Box as={VideoCameraIcon} w={6} h={6} /> : <Box as={VideoCameraSlashIcon} w={6} h={6} />}
-              colorScheme={isVideoEnabled ? 'gray' : 'red'}
-              onClick={toggleVideo}
-            />
-          </Tooltip>
-          <Tooltip label={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}>
-            <IconButton
-              aria-label="Share screen"
-              icon={<Box as={ShareIcon} w={6} h={6} />}
-              colorScheme={isScreenSharing ? 'brand' : 'gray'}
-              onClick={toggleScreenShare}
-            />
-          </Tooltip>
-          <Tooltip label={isRecording ? 'Stop Recording' : 'Start Recording'}>
-            <IconButton
-              aria-label="Record"
-              icon={<Box as="span" w={3} h={3} borderRadius="full" bg={isRecording ? 'red.500' : 'gray.500'} />}
-              colorScheme={isRecording ? 'red' : 'gray'}
-              onClick={toggleRecording}
-            />
-          </Tooltip>
-          <Tooltip label={isHandRaised ? 'Lower Hand' : 'Raise Hand'}>
-            <IconButton
-              aria-label="Raise hand"
-              icon={<Box as={HandRaisedIcon} w={6} h={6} />}
-              colorScheme={isHandRaised ? 'yellow' : 'gray'}
-              onClick={toggleHandRaise}
-            />
-          </Tooltip>
-          <Tooltip label="Leave Meeting">
-            <IconButton
-              aria-label="Leave meeting"
-              icon={<Box as={PhoneIcon} w={6} h={6} transform="rotate(135deg)" />}
-              colorScheme="red"
-              onClick={handleLeaveMeeting}
-            />
-          </Tooltip>
+                <TabPanels h="calc(100vh - 40px)" overflowY="auto">
+                  {/* Participants Panel */}
+                  <TabPanel>
+                    <VStack spacing={4} align="stretch">
+                      <Text fontWeight="bold">Participants ({participants.length + 1})</Text>
+                      <List spacing={2}>
+                        {/* Local User */}
+                        <ListItem p={2} bg="gray.50" borderRadius="md">
+                          <Flex align="center" gap={3}>
+                            <Avatar size="sm" name={user?.username} />
+                            <Box flex={1}>
+                              <Text fontWeight="medium">{user?.username} (You)</Text>
+                              <HStack spacing={1}>
+                                {!isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
+                                {!isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
+                                {isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
+                                {isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
+                              </HStack>
+                            </Box>
+                          </Flex>
+                        </ListItem>
 
-          {/* Meeting Info */}
-          <Box position="absolute" left={4}>
-            <Text fontSize="sm" color="gray.500">
-              {formatTime(elapsedTime)}
-            </Text>
-          </Box>
-        </Flex>
-      </Box>
+                        {/* Other Participants */}
+                        {participants.map(participant => (
+                          <ListItem key={participant.id} p={2} bg="gray.50" borderRadius="md">
+                            <Flex align="center" gap={3}>
+                              <Avatar size="sm" name={participant.username} />
+                              <Box flex={1}>
+                                <Text fontWeight="medium">{participant.username}</Text>
+                                <HStack spacing={1}>
+                                  {!participant.isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
+                                  {!participant.isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
+                                  {participant.isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
+                                  {participant.isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
+                                </HStack>
+                              </Box>
+                            </Flex>
+                          </ListItem>
+                        ))}
+                      </List>
+                    </VStack>
+                  </TabPanel>
 
-      {/* Right Side - Tabs */}
-      <Box w="350px" h="100vh" bg={bgColor}>
-        <Tabs isFitted variant="enclosed">
-          <TabList>
-            <Tab><Box as={UsersIcon} w={5} h={5} /></Tab>
-            <Tab><Box as={ChatIcon} w={5} h={5} /></Tab>
-            <Tab><Box as={PencilIcon} w={5} h={5} /></Tab>
-          </TabList>
-
-          <TabPanels h="calc(100vh - 40px)" overflowY="auto">
-            {/* Participants Panel */}
-            <TabPanel>
-              <VStack spacing={4} align="stretch">
-                <Text fontWeight="bold">Participants ({participants.length + 1})</Text>
-                <List spacing={2}>
-                  {/* Local User */}
-                  <ListItem p={2} bg="gray.50" borderRadius="md">
-                    <Flex align="center" gap={3}>
-                      <Avatar size="sm" name={user?.username} />
-                      <Box flex={1}>
-                        <Text fontWeight="medium">{user?.username} (You)</Text>
-                        <HStack spacing={1}>
-                          {!isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
-                          {!isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
-                          {isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
-                          {isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
-                        </HStack>
+                  {/* Chat Panel */}
+                  <TabPanel h="100%" display="flex" flexDirection="column">
+                    <VStack flex={1} spacing={4} align="stretch">
+                      <Box flex={1} overflowY="auto">
+                        {messages.map(message => (
+                          <Box
+                            key={message.id}
+                            mb={4}
+                            p={2}
+                            bg={message.senderId === user?.id ? 'brand.100' : 'gray.100'}
+                            borderRadius="md"
+                          >
+                            <Text fontWeight="bold" fontSize="sm">{message.senderName}</Text>
+                            <Text>{message.content}</Text>
+                            <Text fontSize="xs" color="gray.500">
+                              {message.timestamp.toLocaleTimeString()}
+                            </Text>
+                          </Box>
+                        ))}
                       </Box>
-                    </Flex>
-                  </ListItem>
+                      <InputGroup size="md">
+                        <Input
+                          pr="4.5rem"
+                          placeholder="Type a message..."
+                          value={newMessage}
+                          onChange={(e) => setNewMessage(e.target.value)}
+                          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                        />
+                        <InputRightElement width="4.5rem">
+                          <Button h="1.75rem" size="sm" onClick={handleSendMessage}>
+                            Send
+                          </Button>
+                        </InputRightElement>
+                      </InputGroup>
+                    </VStack>
+                  </TabPanel>
 
-                  {/* Other Participants */}
-                  {participants.map(participant => (
-                    <ListItem key={participant.id} p={2} bg="gray.50" borderRadius="md">
-                      <Flex align="center" gap={3}>
-                        <Avatar size="sm" name={participant.username} />
-                        <Box flex={1}>
-                          <Text fontWeight="medium">{participant.username}</Text>
-                          <HStack spacing={1}>
-                            {!participant.isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
-                            {!participant.isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
-                            {participant.isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
-                            {participant.isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
-                          </HStack>
-                        </Box>
-                      </Flex>
-                    </ListItem>
-                  ))}
-                </List>
-              </VStack>
-            </TabPanel>
-
-            {/* Chat Panel */}
-            <TabPanel h="100%" display="flex" flexDirection="column">
-              <VStack flex={1} spacing={4} align="stretch">
-                <Box flex={1} overflowY="auto">
-                  {messages.map(message => (
-                    <Box
-                      key={message.id}
-                      mb={4}
-                      p={2}
-                      bg={message.senderId === user?.id ? 'brand.100' : 'gray.100'}
-                      borderRadius="md"
-                    >
-                      <Text fontWeight="bold" fontSize="sm">{message.senderName}</Text>
-                      <Text>{message.content}</Text>
-                      <Text fontSize="xs" color="gray.500">
-                        {message.timestamp.toLocaleTimeString()}
-                      </Text>
-                    </Box>
-                  ))}
-                </Box>
-                <InputGroup size="md">
-                  <Input
-                    pr="4.5rem"
-                    placeholder="Type a message..."
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                  />
-                  <InputRightElement width="4.5rem">
-                    <Button h="1.75rem" size="sm" onClick={handleSendMessage}>
-                      Send
-                    </Button>
-                  </InputRightElement>
-                </InputGroup>
-              </VStack>
-            </TabPanel>
-
-            {/* Tools Panel */}
-            <TabPanel>
-              <VStack spacing={4} align="stretch">
-                <Text fontWeight="bold">Tools</Text>
-                <Box
-                  border="2px"
-                  borderColor={borderColor}
-                  borderRadius="md"
-                  h="400px"
-                  position="relative"
-                >
-                  <canvas
-                    ref={whiteboardRef}
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      cursor: 'crosshair',
-                    }}
-                    onMouseDown={startDrawing}
-                    onMouseMove={draw}
-                    onMouseUp={stopDrawing}
-                    onMouseLeave={stopDrawing}
-                  />
-                </Box>
-                <Button
-                  leftIcon={<Box as={ShareIcon} w={5} h={5} />}
-                  width="100%"
-                  onClick={toggleScreenShare}
-                  colorScheme={isScreenSharing ? 'red' : 'gray'}
-                >
-                  {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
-                </Button>
-                <Divider />
-                <Text fontSize="sm" color="gray.500">More tools coming soon...</Text>
-              </VStack>
-            </TabPanel>
-          </TabPanels>
-        </Tabs>
-      </Box>
+                  {/* Tools Panel */}
+                  <TabPanel>
+                    <VStack spacing={4} align="stretch">
+                      <Text fontWeight="bold">Tools</Text>
+                      <Box
+                        border="2px"
+                        borderColor={borderColor}
+                        borderRadius="md"
+                        h="400px"
+                        position="relative"
+                      >
+                        <canvas
+                          ref={whiteboardRef}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            cursor: 'crosshair',
+                          }}
+                          onMouseDown={startDrawing}
+                          onMouseMove={draw}
+                          onMouseUp={stopDrawing}
+                          onMouseLeave={stopDrawing}
+                        />
+                      </Box>
+                      <Button
+                        leftIcon={<Box as={ShareIcon} w={5} h={5} />}
+                        width="100%"
+                        onClick={toggleScreenShare}
+                        colorScheme={isScreenSharing ? 'red' : 'gray'}
+                      >
+                        {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
+                      </Button>
+                      <Divider />
+                      <Text fontSize="sm" color="gray.500">More tools coming soon...</Text>
+                    </VStack>
+                  </TabPanel>
+                </TabPanels>
+              </Tabs>
+            </Box>
+          </Flex>
+        </>
+      )}
     </Flex>
   );
 };
