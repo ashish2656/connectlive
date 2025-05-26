@@ -19,7 +19,7 @@ async function migrateFriendRequests() {
       // Create new friend requests array with proper schema
       const newFriendRequests = user.friendRequests.map(request => ({
         _id: new mongoose.Types.ObjectId(), // Generate new ObjectId
-        from: request.from,
+        sender: request.from || request.sender, // Handle both old and new property names
         status: request.status,
         createdAt: request.createdAt || new Date()
       }));

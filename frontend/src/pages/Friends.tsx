@@ -226,7 +226,7 @@ const Friends: React.FC = () => {
                 <VStack spacing={4} align="stretch">
                   {pendingRequests.map((request) => (
                     <Box
-                      key={request._id || `request-${request.from._id}`}
+                      key={request._id || `request-${request.sender._id}`}
                       p={4}
                       borderWidth={1}
                       borderRadius="lg"
@@ -237,13 +237,13 @@ const Friends: React.FC = () => {
                       <HStack>
                         <Avatar
                           size="sm"
-                          name={request.from.username}
-                          src={request.from.profilePicture}
+                          name={request.sender.username}
+                          src={request.sender.profilePicture}
                         />
                         <VStack align="start" spacing={0}>
-                          <Text fontWeight="bold">{request.from.username}</Text>
+                          <Text fontWeight="bold">{request.sender.username}</Text>
                           <Text fontSize="sm" color="gray.500">
-                            {request.from.email}
+                            {request.sender.email}
                           </Text>
                         </VStack>
                       </HStack>
@@ -251,14 +251,14 @@ const Friends: React.FC = () => {
                         <Button
                           colorScheme="green"
                           size="sm"
-                          onClick={() => handleAcceptRequest(request.from._id)}
+                          onClick={() => handleAcceptRequest(request.sender._id)}
                         >
                           Accept
                         </Button>
                         <Button
                           colorScheme="red"
                           size="sm"
-                          onClick={() => handleRejectRequest(request.from._id)}
+                          onClick={() => handleRejectRequest(request.sender._id)}
                         >
                           Reject
                         </Button>

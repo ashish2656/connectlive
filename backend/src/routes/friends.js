@@ -7,7 +7,7 @@ router.get('/', async (req, res) => {
   try {
     const user = await User.findById(req.user.userId)
       .populate('friends', 'username email friendCode profilePicture')
-      .populate('friendRequests.from', 'username email friendCode profilePicture');
+      .populate('friendRequests.sender', 'username email friendCode profilePicture');
     
     res.json({
       friends: user.friends,
@@ -38,7 +38,7 @@ router.post('/request/:friendCode', async (req, res) => {
 
     // Check if friend request already exists
     const existingRequest = friend.friendRequests.find(
-      request => request.from.toString() === req.user.userId
+      request => request.sender.toString() === req.user.userId
     );
 
     if (existingRequest) {
@@ -46,7 +46,7 @@ router.post('/request/:friendCode', async (req, res) => {
     }
 
     friend.friendRequests.push({
-      from: req.user.userId,
+      sender: req.user.userId,
       status: 'pending'
     });
 
@@ -68,7 +68,7 @@ router.post('/accept/:userId', async (req, res) => {
     }
 
     const requestIndex = user.friendRequests.findIndex(
-      request => request.from.toString() === req.params.userId
+      request => request.sender.toString() === req.params.userId
     );
 
     if (requestIndex === -1) {
@@ -95,7 +95,7 @@ router.post('/reject/:userId', async (req, res) => {
     const user = await User.findById(req.user.userId);
     
     const requestIndex = user.friendRequests.findIndex(
-      request => request.from.toString() === req.params.userId
+      request => request.sender.toString() === req.params.userId
     );
 
     if (requestIndex === -1) {

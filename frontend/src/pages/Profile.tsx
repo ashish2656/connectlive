@@ -218,12 +218,12 @@ const Profile: React.FC = () => {
                         <HStack spacing={4}>
                           <Avatar
                             size="sm"
-                            name={request.from.username}
+                            name={request.sender.username}
                           />
                           <VStack align="start" spacing={0}>
-                            <Text fontWeight="bold">{request.from.username}</Text>
+                            <Text fontWeight="bold">{request.sender.username}</Text>
                             <Text fontSize="sm" color="gray.600">
-                              {request.from.email}
+                              {request.sender.email}
                             </Text>
                           </VStack>
                         </HStack>
@@ -231,14 +231,14 @@ const Profile: React.FC = () => {
                           <Button
                             colorScheme="green"
                             size="sm"
-                            onClick={() => handleAcceptRequest(request.from._id)}
+                            onClick={() => handleAcceptRequest(request.sender._id)}
                           >
                             Accept
                           </Button>
                           <Button
                             colorScheme="red"
                             size="sm"
-                            onClick={() => handleRejectRequest(request.from._id)}
+                            onClick={() => handleRejectRequest(request.sender._id)}
                           >
                             Reject
                           </Button>
