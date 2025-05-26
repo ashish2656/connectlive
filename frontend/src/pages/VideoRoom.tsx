@@ -78,12 +78,13 @@ interface Participant {
   videoEnabled: boolean;
 }
 
-interface RouteParams {
+type RouteParams = {
   roomId: string;
-}
+};
 
 const VideoRoom: React.FC = () => {
-  const { roomId } = useParams() as RouteParams;
+  const params = useParams<keyof RouteParams>();
+  const roomId = params.roomId;
   const { user } = useAuth();
   const navigate = useNavigate();
   const { isOpen, onOpen, onClose } = useDisclosure();
@@ -103,6 +104,13 @@ const VideoRoom: React.FC = () => {
 
   const bgColor = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
+
+  useEffect(() => {
+    if (!roomId) {
+      navigate('/');
+      return;
+    }
+  }, [roomId, navigate]);
 
   useEffect(() => {
     // Initialize WebRTC and Socket.io connections
