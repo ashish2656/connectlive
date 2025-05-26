@@ -73,6 +73,11 @@ interface PeerConnection {
 
 const MotionBox = motion(Box);
 
+// Add this constant at the top of the file, after imports
+const SOCKET_SERVER = import.meta.env.PROD 
+  ? 'https://your-backend-url.com'  // Replace with your deployed backend URL
+  : 'http://localhost:5000';
+
 const Meeting: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>();
   const { user } = useAuth();
@@ -119,8 +124,10 @@ const Meeting: React.FC = () => {
           localVideoRef.current.srcObject = stream;
         }
 
-        // Connect to socket server
-        socketRef.current = io('http://localhost:5000');
+        // Connect to socket server with the environment-specific URL
+        socketRef.current = io(SOCKET_SERVER, {
+          withCredentials: true
+        });
         
         // Join room
         socketRef.current.emit('join-room', { roomId: meetingId, userId: user?.id });
