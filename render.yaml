@@ -18,8 +18,10 @@ services:
   - type: static
     name: connectlive-frontend
     rootDir: frontend
-    buildCommand: npm install && npm run build
-    publishDir: dist
+    buildCommand: npm install && CI=false npm run build
+    publishDir: build
     envVars:
       - key: VITE_API_URL
+        value: https://connectlive-backend.onrender.com
+      - key: REACT_APP_API_URL
         value: https://connectlive-backend.onrender.com 
