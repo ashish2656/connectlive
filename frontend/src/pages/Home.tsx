@@ -26,6 +26,10 @@ import { useAuth } from '../context/AuthContext';
 import Layout from '../components/Layout';
 import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
+import io from 'socket.io-client';
+
+// Update the constant to use Vite's environment variables
+const SOCKET_SERVER = import.meta.env.VITE_SOCKET_SERVER_URL || 'https://connectlive-backend.onrender.com';
 
 const Home: React.FC = () => {
   const { user } = useAuth();
@@ -40,7 +44,32 @@ const Home: React.FC = () => {
 
   const handleCreateMeeting = () => {
     const meetingId = uuidv4().substring(0, 8); // Create a shorter meeting ID
-    navigate(`/meeting/${meetingId}`);
+    
+    // Connect to socket server and create meeting
+    const socket = io(SOCKET_SERVER, {
+      withCredentials: true,
+      transports: ['websocket', 'polling'],
+    });
+
+    socket.on('connect', () => {
+      socket.emit('create-meeting', { roomId: meetingId, userId: user?.id });
+    });
+
+    socket.on('meeting-created', () => {
+      navigate(`/meeting/${meetingId}`);
+      socket.disconnect();
+    });
+
+    socket.on('room-error', ({ message }) => {
+      toast({
+        title: 'Error',
+        description: message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      socket.disconnect();
+    });
   };
 
   const handleJoinMeeting = () => {
@@ -56,10 +85,52 @@ const Home: React.FC = () => {
     }
 
     setIsLoading(true);
-    // Navigate to the meeting room with the provided code
-    navigate(`/meeting/${meetingCode.trim()}`);
-    setIsLoading(false);
-    onJoinClose();
+
+    // Connect to socket server to validate meeting code
+    const socket = io(SOCKET_SERVER, {
+      withCredentials: true,
+      transports: ['websocket', 'polling'],
+    });
+
+    socket.on('connect', () => {
+      socket.emit('join-room', {
+        roomId: meetingCode.trim(),
+        userId: user?.id,
+        username: user?.username
+      });
+    });
+
+    socket.on('room-error', ({ message }) => {
+      toast({
+        title: 'Error',
+        description: message,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      setIsLoading(false);
+      socket.disconnect();
+    });
+
+    socket.on('room-users', () => {
+      // Meeting exists and we can join
+      navigate(`/meeting/${meetingCode.trim()}`);
+      setIsLoading(false);
+      onJoinClose();
+      socket.disconnect();
+    });
+
+    socket.on('connect_error', () => {
+      toast({
+        title: 'Error',
+        description: 'Failed to connect to server. Please try again.',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      setIsLoading(false);
+      socket.disconnect();
+    });
   };
 
   return (

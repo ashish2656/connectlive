@@ -1,4 +1,5 @@
 const { Server } = require('socket.io');
+const Meeting = require('./models/Meeting');
 
 const initializeSocket = (server) => {
   const io = new Server(server, {
@@ -20,66 +21,86 @@ const initializeSocket = (server) => {
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('join-room', ({ roomId, userId, username }) => {
+    socket.on('join-room', async ({ roomId, userId, username }) => {
       console.log(`User ${username} (${userId}) attempting to join room ${roomId}`);
       
-      // Leave any existing rooms
-      socket.rooms.forEach(room => {
-        if (room !== socket.id) {
-          socket.leave(room);
+      try {
+        // Check if the meeting exists and is active
+        const meeting = await Meeting.findOne({ meetingId: roomId, isActive: true });
+        
+        if (!meeting) {
+          // If meeting doesn't exist and user is trying to join
+          socket.emit('room-error', { message: 'Invalid meeting code or meeting has ended.' });
+          return;
         }
-      });
 
-      // Join the new room
-      socket.join(roomId);
-      
-      // Initialize room if it doesn't exist
-      if (!rooms.has(roomId)) {
-        rooms.set(roomId, new Map());
+        // Add user to meeting participants if not already present
+        if (!meeting.participants.some(p => p.userId.toString() === userId)) {
+          meeting.participants.push({ userId });
+          await meeting.save();
+        }
+
+        // Leave any existing rooms
+        socket.rooms.forEach(room => {
+          if (room !== socket.id) {
+            socket.leave(room);
+          }
+        });
+
+        // Join the new room
+        socket.join(roomId);
+        
+        // Initialize room if it doesn't exist
+        if (!rooms.has(roomId)) {
+          rooms.set(roomId, new Map());
+        }
+
+        // Store user details in the room
+        const roomParticipants = rooms.get(roomId);
+        roomParticipants.set(userId, {
+          socketId: socket.id,
+          username: username,
+          isAudioEnabled: true,
+          isVideoEnabled: true,
+          isScreenSharing: false,
+          isHandRaised: false
+        });
+
+        // Log room participants
+        console.log(`Room ${roomId} participants:`, Array.from(roomParticipants.entries()));
+
+        // Notify others in the room with socket ID
+        socket.to(roomId).emit('user-joined', {
+          userId,
+          username,
+          socketId: socket.id,
+          isAudioEnabled: true,
+          isVideoEnabled: true,
+          isScreenSharing: false,
+          isHandRaised: false
+        });
+
+        // Send list of connected users to the new participant
+        const participants = Array.from(roomParticipants.entries()).map(([userId, user]) => ({
+          userId,
+          username: user.username,
+          socketId: user.socketId,
+          isAudioEnabled: user.isAudioEnabled,
+          isVideoEnabled: user.isVideoEnabled,
+          isScreenSharing: user.isScreenSharing,
+          isHandRaised: user.isHandRaised
+        }));
+        
+        // Emit room users to everyone in the room
+        io.to(roomId).emit('room-users', participants);
+        console.log(`Sent participants list to room ${roomId}:`, participants);
+
+        // Signal the existing participants to create peer connections with the new user
+        socket.to(roomId).emit('receive-signal', { signal: null, id: userId });
+      } catch (error) {
+        console.error('Error joining room:', error);
+        socket.emit('room-error', { message: 'Failed to join meeting. Please try again.' });
       }
-
-      // Store user details in the room
-      const roomParticipants = rooms.get(roomId);
-      roomParticipants.set(userId, {
-        socketId: socket.id,
-        username: username,
-        isAudioEnabled: true,
-        isVideoEnabled: true,
-        isScreenSharing: false,
-        isHandRaised: false
-      });
-
-      // Log room participants
-      console.log(`Room ${roomId} participants:`, Array.from(roomParticipants.entries()));
-
-      // Notify others in the room with socket ID
-      socket.to(roomId).emit('user-joined', {
-        userId,
-        username,
-        socketId: socket.id,
-        isAudioEnabled: true,
-        isVideoEnabled: true,
-        isScreenSharing: false,
-        isHandRaised: false
-      });
-
-      // Send list of connected users to the new participant
-      const participants = Array.from(roomParticipants.entries()).map(([userId, user]) => ({
-        userId,
-        username: user.username,
-        socketId: user.socketId,
-        isAudioEnabled: user.isAudioEnabled,
-        isVideoEnabled: user.isVideoEnabled,
-        isScreenSharing: user.isScreenSharing,
-        isHandRaised: user.isHandRaised
-      }));
-      
-      // Emit room users to everyone in the room
-      io.to(roomId).emit('room-users', participants);
-      console.log(`Sent participants list to room ${roomId}:`, participants);
-
-      // Signal the existing participants to create peer connections with the new user
-      socket.to(roomId).emit('receive-signal', { signal: null, id: userId });
     });
 
     socket.on('disconnect', () => {
@@ -188,6 +209,26 @@ const initializeSocket = (server) => {
       const targetSocket = io.sockets.sockets.get(userToSignal);
       if (targetSocket) {
         targetSocket.emit('peer-signal', { signal, callerId });
+      }
+    });
+
+    socket.on('create-meeting', async ({ roomId, userId }) => {
+      try {
+        // Create a new meeting
+        const meeting = new Meeting({
+          meetingId: roomId,
+          hostId: userId,
+          participants: [{ userId }]
+        });
+        await meeting.save();
+        
+        // Initialize room in memory
+        rooms.set(roomId, new Map());
+        
+        socket.emit('meeting-created', { meetingId: roomId });
+      } catch (error) {
+        console.error('Error creating meeting:', error);
+        socket.emit('room-error', { message: 'Failed to create meeting. Please try again.' });
       }
     });
   });
