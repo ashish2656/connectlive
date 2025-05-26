@@ -1,9 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 import { useAuth } from './AuthContext';
-
-// Default API URL if environment variable is not set
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
+import { API_ENDPOINTS } from '../config/api';
 
 interface Friend {
   _id: string;
@@ -15,9 +13,10 @@ interface Friend {
 
 interface FriendRequest {
   _id: string;
-  from: Friend;
+  sender: Friend;
+  recipient: Friend;
   status: 'pending' | 'accepted' | 'rejected';
-  createdAt: string;
+  createdAt: Date;
 }
 
 interface FriendsContextType {
@@ -49,7 +48,7 @@ export const FriendsProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const fetchFriends = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/friends`, {
+      const response = await axios.get(`${API_ENDPOINTS.friends}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setFriends(response.data.friends);
@@ -70,7 +69,7 @@ export const FriendsProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const sendFriendRequest = async (friendCode: string) => {
     try {
       const response = await axios.post(
-        `${API_URL}/api/friends/request/${friendCode}`,
+        `${API_ENDPOINTS.friends.add}/${friendCode}`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -87,7 +86,7 @@ export const FriendsProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const acceptFriendRequest = async (userId: string) => {
     try {
       await axios.post(
-        `${API_URL}/api/friends/accept/${userId}`,
+        `${API_ENDPOINTS.friends.requests}/accept/${userId}`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -100,7 +99,7 @@ export const FriendsProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const rejectFriendRequest = async (userId: string) => {
     try {
       await axios.post(
-        `${API_URL}/api/friends/reject/${userId}`,
+        `${API_ENDPOINTS.friends.requests}/reject/${userId}`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -113,7 +112,7 @@ export const FriendsProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const removeFriend = async (friendId: string) => {
     try {
       await axios.delete(
-        `${API_URL}/api/friends/${friendId}`,
+        `${API_ENDPOINTS.friends.remove}/${friendId}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       await fetchFriends();

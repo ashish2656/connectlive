@@ -3,9 +3,6 @@ import axios from 'axios';
 import Cookies from 'js-cookie';
 import { API_ENDPOINTS } from '../config/api';
 
-// Default API URL if environment variable is not set
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
-
 interface User {
   id: string;
   username: string;
@@ -28,7 +25,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 // Cookie configuration
 const COOKIE_OPTIONS = {
   expires: 7, // 7 days
-  secure: process.env.NODE_ENV === 'production',
+  secure: true,
   sameSite: 'strict' as const
 };
 

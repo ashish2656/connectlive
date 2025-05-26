@@ -13,8 +13,8 @@ export const API_ENDPOINTS = {
   },
   friends: {
     list: `${API_BASE_URL}/api/friends`,
-    add: `${API_BASE_URL}/api/friends/add`,
-    remove: `${API_BASE_URL}/api/friends/remove`,
+    add: `${API_BASE_URL}/api/friends/request`,
+    remove: `${API_BASE_URL}/api/friends`,
     requests: `${API_BASE_URL}/api/friends/requests`,
   },
 };
