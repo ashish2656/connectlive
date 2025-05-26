@@ -8,7 +8,6 @@ const path = require('path');
 
 // Routes
 const authRoutes = require('./routes/auth');
-const roomRoutes = require('./routes/room');
 const friendRoutes = require('./routes/friends');
 const usersRoutes = require('./routes/users');
 
@@ -71,7 +70,6 @@ app.get('/', (req, res) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/rooms', authenticateToken, roomRoutes);
 app.use('/api/friends', authenticateToken, friendRoutes);
 app.use('/api/users', authenticateToken, usersRoutes);
 
