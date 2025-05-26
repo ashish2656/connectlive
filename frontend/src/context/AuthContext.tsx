@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 import Cookies from 'js-cookie';
+import { API_ENDPOINTS } from '../config/api';
 
 // Default API URL if environment variable is not set
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001';
@@ -17,7 +18,7 @@ interface AuthContextType {
   token: string | null;
   login: (email: string, password: string) => Promise<void>;
   register: (username: string, email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   isAuthenticated: boolean;
   isLoading: boolean;
 }
@@ -40,56 +41,47 @@ export const useAuth = () => {
 };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(() => {
-    const savedUser = Cookies.get('user');
-    return savedUser ? JSON.parse(savedUser) : null;
-  });
-  
-  const [token, setToken] = useState<string | null>(() => {
-    return Cookies.get('token') || null;
-  });
-
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return !!Cookies.get('token');
-  });
-
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Verify token and fetch user data on mount
-    const verifyAuth = async () => {
-      const savedToken = Cookies.get('token');
-      if (savedToken) {
-        try {
-          const response = await axios.get(`${API_URL}/api/auth/profile`, {
-            headers: { Authorization: `Bearer ${savedToken}` }
-          });
-          setUser(response.data);
-          setToken(savedToken);
-          setIsAuthenticated(true);
-        } catch (error) {
-          console.error('Token verification failed:', error);
-          handleLogout();
-        }
-      }
+    const token = Cookies.get('token');
+    if (token) {
+      fetchUserProfile();
+    } else {
       setIsLoading(false);
-    };
-
-    verifyAuth();
+    }
   }, []);
 
-  const handleLogout = () => {
-    setUser(null);
-    setToken(null);
-    setIsAuthenticated(false);
-    Cookies.remove('user');
-    Cookies.remove('token');
+  const fetchUserProfile = async () => {
+    try {
+      const token = Cookies.get('token');
+      if (!token) return;
+
+      const response = await axios.get(API_ENDPOINTS.users.profile, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      setUser(response.data);
+      setToken(token);
+      setIsAuthenticated(true);
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+      Cookies.remove('token');
+      setUser(null);
+      setToken(null);
+      setIsAuthenticated(false);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const login = async (email: string, password: string) => {
     try {
       setIsLoading(true);
-      const response = await axios.post(`${API_URL}/api/auth/login`, {
+      const response = await axios.post(API_ENDPOINTS.auth.login, {
         email,
         password
       });
@@ -120,7 +112,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const register = async (username: string, email: string, password: string) => {
     try {
       setIsLoading(true);
-      const response = await axios.post(`${API_URL}/api/auth/register`, {
+      const response = await axios.post(API_ENDPOINTS.auth.register, {
         username,
         email,
         password
@@ -149,8 +141,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const logout = () => {
-    handleLogout();
+  const logout = async () => {
+    try {
+      const token = Cookies.get('token');
+      if (token) {
+        await axios.post(API_ENDPOINTS.auth.logout, {}, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      Cookies.remove('token');
+      Cookies.remove('user');
+      setUser(null);
+      setToken(null);
+      setIsAuthenticated(false);
+    }
   };
 
   return (
