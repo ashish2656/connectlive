@@ -14,4 +14,12 @@ services:
       - key: JWT_SECRET
         sync: false
       - key: FRONTEND_URL
-        sync: false 
+        sync: false
+  - type: static
+    name: connectlive-frontend
+    rootDir: frontend-new
+    buildCommand: npm install && npm run build
+    publishDir: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://connectlive-backend.onrender.com 
