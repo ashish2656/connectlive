@@ -41,11 +41,23 @@ const Friends: React.FC = () => {
   const { hasCopied, onCopy } = useClipboard(user?.friendCode || '');
 
   const handleSendRequest = async () => {
+    if (!friendCode.trim()) {
+      toast({
+        title: 'Error',
+        description: 'Please enter a friend code',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
     try {
       await sendFriendRequest(friendCode);
       setFriendCode('');
       toast({
-        title: 'Friend request sent',
+        title: 'Success',
+        description: 'Friend request sent successfully',
         status: 'success',
         duration: 3000,
         isClosable: true,
@@ -53,7 +65,7 @@ const Friends: React.FC = () => {
     } catch (error: any) {
       toast({
         title: 'Error',
-        description: error.response?.data?.message || 'Failed to send friend request',
+        description: error.message || 'Failed to send friend request',
         status: 'error',
         duration: 5000,
         isClosable: true,

@@ -69,13 +69,17 @@ export const FriendsProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const sendFriendRequest = async (friendCode: string) => {
     try {
-      await axios.post(
+      const response = await axios.post(
         `${API_URL}/api/friends/request/${friendCode}`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       );
       await fetchFriends();
-    } catch (error) {
+      return response.data;
+    } catch (error: any) {
+      if (error.response?.data?.message) {
+        throw new Error(error.response.data.message);
+      }
       throw error;
     }
   };
