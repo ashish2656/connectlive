@@ -26,20 +26,11 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://connectlive-psi.vercel.app',
   'https://connectlive.vercel.app',
+  'https://connectlive-git-main-ashishs-projects-9530e095.vercel.app',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
-// Socket.IO Configuration
-const io = socketIo(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
-    credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization']
-  }
-});
-
-// CORS Middleware
+// CORS Middleware with detailed configuration
 app.use(cors({
   origin: function(origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
@@ -51,10 +42,22 @@ app.use(cors({
     }
     return callback(null, true);
   },
-  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
+
+// Socket.IO Configuration
+const io = socketIo(server, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+  }
+});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -69,31 +72,15 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Welcome to ConnectLive API',
     version: '1.0.0',
-    endpoints: {
-      auth: {
-        register: 'POST /api/auth/register',
-        login: 'POST /api/auth/login',
-        profile: 'GET /api/auth/profile'
-      },
-      rooms: {
-        create: 'POST /api/rooms',
-        list: 'GET /api/rooms',
-        getRoom: 'GET /api/rooms/:roomId'
-      },
-      friends: {
-        list: 'GET /api/friends'
-      },
-      users: {
-        search: 'GET /api/users/search'
-      }
-    }
+    status: 'healthy',
+    timestamp: new Date().toISOString()
   });
 });
 
 // Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/friends', authenticateToken, friendRoutes);
 app.use('/api/rooms', authenticateToken, roomRoutes);
+app.use('/api/friends', authenticateToken, friendRoutes);
 app.use('/api/users', authenticateToken, usersRoutes);
 
 // Health check endpoint
@@ -101,29 +88,12 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
 
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-
-  socket.on('join-room', (roomId, userId) => {
-    socket.join(roomId);
-    socket.to(roomId).emit('user-connected', userId);
-  });
-
-  socket.on('send-message', (roomId, message) => {
-    socket.to(roomId).emit('receive-message', message);
-  });
-
-  socket.on('start-share-screen', (roomId, userId) => {
-    socket.to(roomId).emit('user-share-screen', userId);
-  });
-
-  socket.on('stop-share-screen', (roomId, userId) => {
-    socket.to(roomId).emit('user-stop-share-screen', userId);
-  });
-
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    message: 'Something went wrong!',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
