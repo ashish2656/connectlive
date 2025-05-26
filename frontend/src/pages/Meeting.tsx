@@ -49,6 +49,12 @@ import Peer from 'simple-peer';
 import { io, Socket } from 'socket.io-client';
 import RecordRTC from 'recordrtc';
 
+interface User {
+  id: string;
+  username: string;
+  email: string;
+}
+
 interface Participant {
   id: string;
   username: string;
@@ -197,14 +203,14 @@ const Meeting: React.FC = () => {
         socketRef.current.on('room-users', (users: RoomUser[]) => {
           console.log('Room users:', users);
           // Filter out the current user from the participants list
-          const otherUsers = users.filter(user => user.userId !== user?.id);
-          setParticipants(otherUsers.map(user => ({
-            id: user.userId,
-            username: user.username || 'Anonymous',
-            isAudioEnabled: user.isAudioEnabled,
-            isVideoEnabled: user.isVideoEnabled,
-            isScreenSharing: user.isScreenSharing,
-            isHandRaised: user.isHandRaised
+          const otherUsers = users.filter(roomUser => roomUser.userId !== user?.id);
+          setParticipants(otherUsers.map(roomUser => ({
+            id: roomUser.userId,
+            username: roomUser.username || 'Anonymous',
+            isAudioEnabled: roomUser.isAudioEnabled,
+            isVideoEnabled: roomUser.isVideoEnabled,
+            isScreenSharing: roomUser.isScreenSharing,
+            isHandRaised: roomUser.isHandRaised
           })));
         });
 
