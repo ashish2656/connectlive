@@ -24,6 +24,7 @@ import {
   Badge,
   Tooltip,
   useToast,
+  useClipboard,
 } from '@chakra-ui/react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -40,8 +41,12 @@ import {
   PencilIcon,
   VideoCameraSlashIcon,
   SpeakerXMarkIcon as MicrophoneSlashIcon,
+  ClipboardIcon,
 } from '@heroicons/react/24/solid';
 import { motion } from 'framer-motion';
+import Peer from 'simple-peer';
+import { io, Socket } from 'socket.io-client';
+import RecordRTC from 'recordrtc';
 
 interface Participant {
   id: string;
@@ -61,6 +66,11 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+interface PeerConnection {
+  peerId: string;
+  peer: Peer.Instance;
+}
+
 const MotionBox = motion(Box);
 
 const Meeting: React.FC = () => {
@@ -68,6 +78,7 @@ const Meeting: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const toast = useToast();
+  const { hasCopied, onCopy } = useClipboard(meetingId || '');
 
   // State
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -79,15 +90,91 @@ const Meeting: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [isDrawing, setIsDrawing] = useState(false);
 
   // Refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const whiteboardRef = useRef<HTMLCanvasElement>(null);
   const startTimeRef = useRef<Date>(new Date());
+  const socketRef = useRef<Socket>();
+  const peersRef = useRef<PeerConnection[]>([]);
+  const streamRef = useRef<MediaStream>();
+  const recorderRef = useRef<RecordRTC>();
+  const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
 
   // Theme
   const bgColor = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
+
+  // Initialize WebRTC and Socket connection
+  useEffect(() => {
+    const initializeMedia = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: true,
+          audio: true,
+        });
+        streamRef.current = stream;
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+
+        // Connect to socket server
+        socketRef.current = io('http://localhost:5000');
+        
+        // Join room
+        socketRef.current.emit('join-room', { roomId: meetingId, userId: user?.id });
+
+        // Handle new participant
+        socketRef.current.on('user-joined', ({ userId, username }) => {
+          const peer = new Peer({
+            initiator: true,
+            trickle: false,
+            stream,
+          });
+
+          peer.on('signal', signal => {
+            socketRef.current?.emit('sending-signal', { userToSignal: userId, signal });
+          });
+
+          peersRef.current.push({ peerId: userId, peer });
+        });
+
+        // Handle receiving returned signal
+        socketRef.current.on('receiving-returned-signal', ({ signal, id }) => {
+          const item = peersRef.current.find(p => p.peerId === id);
+          item?.peer.signal(signal);
+        });
+
+        // Handle user disconnect
+        socketRef.current.on('user-disconnected', userId => {
+          const peerConnection = peersRef.current.find(p => p.peerId === userId);
+          if (peerConnection) {
+            peerConnection.peer.destroy();
+            peersRef.current = peersRef.current.filter(p => p.peerId !== userId);
+            setParticipants(prev => prev.filter(p => p.id !== userId));
+          }
+        });
+
+      } catch (error) {
+        console.error('Error accessing media devices:', error);
+        toast({
+          title: 'Error accessing camera/microphone',
+          description: 'Please make sure you have granted permission to use media devices.',
+          status: 'error',
+          duration: 5000,
+        });
+      }
+    };
+
+    initializeMedia();
+
+    return () => {
+      streamRef.current?.getTracks().forEach(track => track.stop());
+      socketRef.current?.disconnect();
+      peersRef.current.forEach(({ peer }) => peer.destroy());
+    };
+  }, [meetingId, user?.id]);
 
   // Timer effect
   useEffect(() => {
@@ -100,6 +187,21 @@ const Meeting: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
+  // Initialize whiteboard
+  useEffect(() => {
+    if (whiteboardRef.current) {
+      const canvas = whiteboardRef.current;
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      const context = canvas.getContext('2d');
+      if (context) {
+        context.strokeStyle = '#000000';
+        context.lineWidth = 2;
+        canvasContextRef.current = context;
+      }
+    }
+  }, []);
+
   // Format elapsed time
   const formatTime = (seconds: number) => {
     const hrs = Math.floor(seconds / 3600);
@@ -109,11 +211,91 @@ const Meeting: React.FC = () => {
   };
 
   // Handlers
-  const toggleAudio = () => setIsAudioEnabled(!isAudioEnabled);
-  const toggleVideo = () => setIsVideoEnabled(!isVideoEnabled);
-  const toggleScreenShare = () => setIsScreenSharing(!isScreenSharing);
-  const toggleRecording = () => setIsRecording(!isRecording);
-  const toggleHandRaise = () => setIsHandRaised(!isHandRaised);
+  const toggleAudio = () => {
+    if (streamRef.current) {
+      streamRef.current.getAudioTracks().forEach(track => {
+        track.enabled = !isAudioEnabled;
+      });
+      setIsAudioEnabled(!isAudioEnabled);
+    }
+  };
+
+  const toggleVideo = () => {
+    if (streamRef.current) {
+      streamRef.current.getVideoTracks().forEach(track => {
+        track.enabled = !isVideoEnabled;
+      });
+      setIsVideoEnabled(!isVideoEnabled);
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    try {
+      if (!isScreenSharing) {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+        });
+        
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = screenStream;
+        }
+
+        screenStream.getVideoTracks()[0].onended = () => {
+          if (streamRef.current && localVideoRef.current) {
+            localVideoRef.current.srcObject = streamRef.current;
+            setIsScreenSharing(false);
+          }
+        };
+
+        setIsScreenSharing(true);
+      } else {
+        if (streamRef.current && localVideoRef.current) {
+          localVideoRef.current.srcObject = streamRef.current;
+        }
+        setIsScreenSharing(false);
+      }
+    } catch (error) {
+      console.error('Error sharing screen:', error);
+      toast({
+        title: 'Error sharing screen',
+        description: 'Unable to share screen. Please try again.',
+        status: 'error',
+        duration: 5000,
+      });
+    }
+  };
+
+  const toggleRecording = () => {
+    if (!isRecording) {
+      if (streamRef.current) {
+        const recorder = new RecordRTC(streamRef.current, {
+          type: 'video',
+        });
+        recorder.startRecording();
+        recorderRef.current = recorder;
+        setIsRecording(true);
+      }
+    } else {
+      if (recorderRef.current) {
+        recorderRef.current.stopRecording(() => {
+          const blob = recorderRef.current?.getBlob();
+          if (blob) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `recording-${new Date().toISOString()}.webm`;
+            a.click();
+          }
+        });
+        setIsRecording(false);
+      }
+    }
+  };
+
+  const toggleHandRaise = () => {
+    setIsHandRaised(!isHandRaised);
+    socketRef.current?.emit('hand-raised', { userId: user?.id, isRaised: !isHandRaised });
+  };
 
   const handleSendMessage = () => {
     if (!newMessage.trim()) return;
@@ -126,17 +308,81 @@ const Meeting: React.FC = () => {
       timestamp: new Date(),
     };
 
+    socketRef.current?.emit('send-message', message);
     setMessages([...messages, message]);
     setNewMessage('');
   };
 
   const handleLeaveMeeting = () => {
-    // Cleanup and navigate
+    streamRef.current?.getTracks().forEach(track => track.stop());
+    socketRef.current?.disconnect();
     navigate('/');
+  };
+
+  // Whiteboard handlers
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = whiteboardRef.current;
+    const context = canvasContextRef.current;
+    if (canvas && context) {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      context.beginPath();
+      context.moveTo(x, y);
+      setIsDrawing(true);
+    }
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || !canvasContextRef.current || !whiteboardRef.current) return;
+    
+    const canvas = whiteboardRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    canvasContextRef.current.lineTo(x, y);
+    canvasContextRef.current.stroke();
+  };
+
+  const stopDrawing = () => {
+    if (canvasContextRef.current) {
+      canvasContextRef.current.closePath();
+    }
+    setIsDrawing(false);
   };
 
   return (
     <Flex h="100vh" bg={bgColor}>
+      {/* Meeting Code Display */}
+      <Box
+        position="absolute"
+        top={4}
+        left={4}
+        p={2}
+        bg="blackAlpha.600"
+        color="white"
+        borderRadius="md"
+        zIndex={10}
+      >
+        <HStack spacing={2}>
+          <Text>Meeting Code: {meetingId}</Text>
+          <IconButton
+            aria-label="Copy meeting code"
+            icon={<Box as={ClipboardIcon} w={4} h={4} />}
+            size="sm"
+            variant="ghost"
+            color="white"
+            onClick={onCopy}
+          />
+        </HStack>
+        {hasCopied && (
+          <Text fontSize="xs" color="green.200">
+            Copied to clipboard!
+          </Text>
+        )}
+      </Box>
+
       {/* Left Side - Video Grid */}
       <Box flex="1" p={4} borderRight="1px" borderColor={borderColor}>
         <Grid
@@ -388,11 +634,33 @@ const Meeting: React.FC = () => {
             <TabPanel>
               <VStack spacing={4} align="stretch">
                 <Text fontWeight="bold">Tools</Text>
-                <Button leftIcon={<Box as={PencilIcon} w={5} h={5} />} width="100%">
-                  Whiteboard
-                </Button>
-                <Button leftIcon={<Box as={ShareIcon} w={5} h={5} />} width="100%">
-                  Share Screen
+                <Box
+                  border="2px"
+                  borderColor={borderColor}
+                  borderRadius="md"
+                  h="400px"
+                  position="relative"
+                >
+                  <canvas
+                    ref={whiteboardRef}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      cursor: 'crosshair',
+                    }}
+                    onMouseDown={startDrawing}
+                    onMouseMove={draw}
+                    onMouseUp={stopDrawing}
+                    onMouseLeave={stopDrawing}
+                  />
+                </Box>
+                <Button
+                  leftIcon={<Box as={ShareIcon} w={5} h={5} />}
+                  width="100%"
+                  onClick={toggleScreenShare}
+                  colorScheme={isScreenSharing ? 'red' : 'gray'}
+                >
+                  {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
                 </Button>
                 <Divider />
                 <Text fontSize="sm" color="gray.500">More tools coming soon...</Text>
