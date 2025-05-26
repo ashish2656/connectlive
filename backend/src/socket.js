@@ -52,7 +52,7 @@ const initializeSocket = (server) => {
       // Log room participants
       console.log(`Room ${roomId} participants:`, Array.from(roomParticipants.entries()));
 
-      // Notify others in the room
+      // Notify others in the room with socket ID
       socket.to(roomId).emit('user-joined', {
         userId,
         username,
@@ -67,6 +67,7 @@ const initializeSocket = (server) => {
       const participants = Array.from(roomParticipants.entries()).map(([userId, user]) => ({
         userId,
         username: user.username,
+        socketId: user.socketId,
         isAudioEnabled: user.isAudioEnabled,
         isVideoEnabled: user.isVideoEnabled,
         isScreenSharing: user.isScreenSharing,
@@ -76,6 +77,9 @@ const initializeSocket = (server) => {
       // Emit room users to everyone in the room
       io.to(roomId).emit('room-users', participants);
       console.log(`Sent participants list to room ${roomId}:`, participants);
+
+      // Signal the existing participants to create peer connections with the new user
+      socket.to(roomId).emit('receive-signal', { signal: null, id: userId });
     });
 
     socket.on('disconnect', () => {
@@ -176,6 +180,14 @@ const initializeSocket = (server) => {
           }));
           io.to(roomId).emit('room-users', updatedParticipants);
         }
+      }
+    });
+
+    // Handle WebRTC signaling
+    socket.on('peer-signal', ({ userToSignal, callerId, signal }) => {
+      const targetSocket = io.sockets.sockets.get(userToSignal);
+      if (targetSocket) {
+        targetSocket.emit('peer-signal', { signal, callerId });
       }
     });
   });

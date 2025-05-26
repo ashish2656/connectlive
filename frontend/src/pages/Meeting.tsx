@@ -182,21 +182,53 @@ const Meeting: React.FC = () => {
           });
         });
 
-        socketRef.current.on('user-joined', ({ userId, username }) => {
-          console.log('User joined:', userId, username);
-          setParticipants(prev => {
-            // Check if participant already exists
-            if (prev.some(p => p.id === userId)) {
-              return prev;
-            }
-            return [...prev, {
-              id: userId,
-              username: username || 'Anonymous',
-              isAudioEnabled: true,
-              isVideoEnabled: true,
-              isScreenSharing: false,
-              isHandRaised: false
-            }];
+        socketRef.current.on('user-joined', async ({ userId, username, socketId }) => {
+          console.log('User joined:', userId, username, socketId);
+          
+          // Create a new peer connection for the joined user
+          const peer = new Peer({
+            initiator: true,
+            trickle: false,
+            stream: streamRef.current
+          });
+
+          peer.on('signal', signal => {
+            socketRef.current?.emit('peer-signal', {
+              userToSignal: socketId,
+              callerId: user?.id,
+              signal
+            });
+          });
+
+          peer.on('stream', stream => {
+            setParticipants(prev => {
+              const participantIndex = prev.findIndex(p => p.id === userId);
+              if (participantIndex !== -1) {
+                const updatedParticipants = [...prev];
+                updatedParticipants[participantIndex] = {
+                  ...updatedParticipants[participantIndex],
+                  stream
+                };
+                return updatedParticipants;
+              }
+              return [
+                ...prev,
+                {
+                  id: userId,
+                  username: username || 'Anonymous',
+                  isAudioEnabled: true,
+                  isVideoEnabled: true,
+                  isScreenSharing: false,
+                  isHandRaised: false,
+                  stream
+                }
+              ];
+            });
+          });
+
+          peersRef.current.push({
+            peerId: userId,
+            peer
           });
         });
 
@@ -248,6 +280,51 @@ const Meeting: React.FC = () => {
             }
             return p;
           }));
+        });
+
+        socketRef.current.on('peer-signal', ({ signal, callerId }) => {
+          const item = peersRef.current.find(p => p.peerId === callerId);
+          if (item) {
+            item.peer.signal(signal);
+          }
+        });
+
+        socketRef.current.on('receive-signal', ({ signal, id }) => {
+          const peer = new Peer({
+            initiator: false,
+            trickle: false,
+            stream: streamRef.current
+          });
+
+          peer.on('signal', signal => {
+            socketRef.current?.emit('peer-signal', {
+              userToSignal: id,
+              callerId: user?.id,
+              signal
+            });
+          });
+
+          peer.on('stream', stream => {
+            setParticipants(prev => {
+              const participantIndex = prev.findIndex(p => p.id === id);
+              if (participantIndex !== -1) {
+                const updatedParticipants = [...prev];
+                updatedParticipants[participantIndex] = {
+                  ...updatedParticipants[participantIndex],
+                  stream
+                };
+                return updatedParticipants;
+              }
+              return prev;
+            });
+          });
+
+          peer.signal(signal);
+
+          peersRef.current.push({
+            peerId: id,
+            peer
+          });
         });
 
         setIsLoading(false);
@@ -590,6 +667,11 @@ const Meeting: React.FC = () => {
                     <video
                       autoPlay
                       playsInline
+                      ref={video => {
+                        if (video && participant.stream) {
+                          video.srcObject = participant.stream;
+                        }
+                      }}
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                     />
                     <Box

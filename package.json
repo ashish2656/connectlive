@@ -1,14 +1,15 @@
 {
-  "name": "connectlive",
-  "version": "1.0.0",
+  "name": "connectlive-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
   "description": "A video conferencing application",
   "main": "index.js",
-  "scripts": {
-    "start:backend": "cd backend && npm start",
-    "start:frontend": "cd frontend && npm start",
-    "dev": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
-    "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install"
-  },
   "keywords": [],
   "author": "",
   "license": "ISC",
