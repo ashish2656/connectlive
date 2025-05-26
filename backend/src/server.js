@@ -41,6 +41,32 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/connectli
   .then(() => console.log('Connected to MongoDB'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
+// Root route
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Welcome to ConnectLive API',
+    version: '1.0.0',
+    endpoints: {
+      auth: {
+        register: 'POST /api/auth/register',
+        login: 'POST /api/auth/login',
+        profile: 'GET /api/auth/profile'
+      },
+      rooms: {
+        create: 'POST /api/rooms',
+        list: 'GET /api/rooms',
+        getRoom: 'GET /api/rooms/:roomId'
+      },
+      friends: {
+        list: 'GET /api/friends'
+      },
+      users: {
+        search: 'GET /api/users/search'
+      }
+    }
+  });
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/friends', authenticateToken, friendRoutes);
