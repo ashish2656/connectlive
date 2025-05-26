@@ -26,6 +26,7 @@ import {
   ListItem,
   Avatar,
   Badge,
+  Divider,
 } from '@chakra-ui/react';
 import { motion } from 'framer-motion';
 import {
@@ -40,6 +41,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Socket } from 'socket.io-client';
+import io from 'socket.io-client';
 
 // Framer Motion variants
 const containerVariants = {
@@ -76,6 +78,7 @@ interface Participant {
   stream?: MediaStream;
   audioEnabled: boolean;
   videoEnabled: boolean;
+  isScreenSharing: boolean;
 }
 
 type RouteParams = {
@@ -88,10 +91,11 @@ const VideoRoom: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { isOpen, onOpen, onClose } = useDisclosure();
-  const [activeTab, setActiveTab] = useState<'chat' | 'participants' | 'whiteboard'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'whiteboard'>('chat');
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [participants, setParticipants] = useState<Participant[]>([]);
+  const [focusedParticipant, setFocusedParticipant] = useState<string | null>(null);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -101,22 +105,56 @@ const VideoRoom: React.FC = () => {
   const socketRef = useRef<Socket>();
   const mediaRecorderRef = useRef<MediaRecorder>();
   const whiteboardRef = useRef<any>(null);
+  const peerConnections = useRef<{ [key: string]: RTCPeerConnection }>({});
 
   const bgColor = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
+  const sidebarBg = useColorModeValue('gray.50', 'gray.900');
 
   useEffect(() => {
     if (!roomId) {
       navigate('/');
       return;
     }
-  }, [roomId, navigate]);
 
-  useEffect(() => {
-    // Initialize WebRTC and Socket.io connections
+    // Initialize socket connection
+    const socket = io(process.env.REACT_APP_API_URL || 'http://localhost:5001');
+    socketRef.current = socket;
+
+    // Join room
+    socket.emit('join-room', { roomId, userId: user?.id, username: user?.username });
+
+    // Listen for new participants
+    socket.on('user-connected', ({ userId, username }) => {
+      setParticipants(prev => [...prev, {
+        id: userId,
+        username,
+        audioEnabled: true,
+        videoEnabled: true,
+        isScreenSharing: false
+      }]);
+      // Initialize peer connection for new user
+      createPeerConnection(userId);
+    });
+
+    // Listen for participant disconnection
+    socket.on('user-disconnected', ({ userId }) => {
+      setParticipants(prev => prev.filter(p => p.id !== userId));
+      if (peerConnections.current[userId]) {
+        peerConnections.current[userId].close();
+        delete peerConnections.current[userId];
+      }
+
+      // If last person leaves, delete the room
+      if (participants.length === 1) {
+        socket.emit('delete-room', roomId);
+        navigate('/');
+      }
+    });
+
+    // Initialize WebRTC
     const initializeRoom = async () => {
       try {
-        // Get user media
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true
@@ -126,11 +164,15 @@ const VideoRoom: React.FC = () => {
           localVideoRef.current.srcObject = stream;
         }
 
-        // Initialize socket connection
-        // Add socket connection logic here
-
-        // Initialize peer connections
-        // Add peer connection logic here
+        // Add local participant
+        setParticipants(prev => [{
+          id: user?.id || '',
+          username: user?.username || '',
+          stream,
+          audioEnabled: true,
+          videoEnabled: true,
+          isScreenSharing: false
+        }]);
 
       } catch (error) {
         console.error('Error accessing media devices:', error);
@@ -141,13 +183,21 @@ const VideoRoom: React.FC = () => {
 
     return () => {
       // Cleanup
-      socketRef.current?.disconnect();
+      socket.emit('leave-room', { roomId, userId: user?.id });
+      socket.disconnect();
       if (localVideoRef.current?.srcObject) {
         const tracks = (localVideoRef.current.srcObject as MediaStream).getTracks();
         tracks.forEach(track => track.stop());
       }
+      // Close all peer connections
+      Object.values(peerConnections.current).forEach(pc => pc.close());
+      peerConnections.current = {};
     };
-  }, [roomId]);
+  }, [roomId, user, navigate]);
+
+  const handleParticipantClick = (participantId: string) => {
+    setFocusedParticipant(focusedParticipant === participantId ? null : participantId);
+  };
 
   const handleToggleAudio = () => {
     if (localVideoRef.current?.srcObject) {
@@ -240,6 +290,46 @@ const VideoRoom: React.FC = () => {
     navigate('/');
   };
 
+  const createPeerConnection = (userId: string) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+
+    // Add local stream
+    if (localVideoRef.current?.srcObject) {
+      (localVideoRef.current.srcObject as MediaStream).getTracks().forEach(track => {
+        if (localVideoRef.current?.srcObject) {
+          pc.addTrack(track, localVideoRef.current.srcObject as MediaStream);
+        }
+      });
+    }
+
+    // Handle ICE candidates
+    pc.onicecandidate = event => {
+      if (event.candidate) {
+        socketRef.current?.emit('ice-candidate', {
+          candidate: event.candidate,
+          to: userId
+        });
+      }
+    };
+
+    // Handle incoming streams
+    pc.ontrack = event => {
+      setParticipants(prev => {
+        const participant = prev.find(p => p.id === userId);
+        if (participant) {
+          participant.stream = event.streams[0];
+          return [...prev];
+        }
+        return prev;
+      });
+    };
+
+    peerConnections.current[userId] = pc;
+    return pc;
+  };
+
   return (
     <Box h="100vh" bg={useColorModeValue('gray.50', 'gray.900')}>
       {/* Top Bar */}
@@ -266,167 +356,138 @@ const VideoRoom: React.FC = () => {
       </Flex>
 
       {/* Main Content */}
-      <Flex h="calc(100vh - 60px)" mt="60px">
+      <Flex h="calc(100vh - 140px)" mt="60px">
         {/* Video Grid */}
-        <MotionGrid
-          flex={1}
-          templateColumns="repeat(auto-fit, minmax(300px, 1fr))"
-          gap={4}
-          p={4}
-          variants={containerVariants}
-          initial="hidden"
-          animate="visible"
-        >
-          {/* Local Video */}
-          <MotionBox
-            position="relative"
-            borderRadius="lg"
-            overflow="hidden"
-            variants={itemVariants}
+        <Box flex={1} p={4} overflow="auto">
+          <Grid
+            templateColumns={
+              focusedParticipant
+                ? "1fr"
+                : "repeat(auto-fit, minmax(300px, 1fr))"
+            }
+            gap={4}
           >
-            <video
-              ref={localVideoRef}
-              autoPlay
-              muted
-              playsInline
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-            <Text
-              position="absolute"
-              bottom={2}
-              left={2}
-              color="white"
-              bg="blackAlpha.600"
-              px={2}
-              py={1}
-              borderRadius="md"
-              fontSize="sm"
-            >
-              You
-            </Text>
-          </MotionBox>
-
-          {/* Participant Videos */}
-          {participants.map(participant => (
-            <MotionBox
-              key={participant.id}
-              position="relative"
-              borderRadius="lg"
-              overflow="hidden"
-              variants={itemVariants}
-            >
-              {/* Add participant video here */}
-              <Text
-                position="absolute"
-                bottom={2}
-                left={2}
-                color="white"
-                bg="blackAlpha.600"
-                px={2}
-                py={1}
-                borderRadius="md"
-                fontSize="sm"
-              >
-                {participant.username}
-              </Text>
-            </MotionBox>
-          ))}
-        </MotionGrid>
+            {participants.map(participant => (
+              focusedParticipant === null || focusedParticipant === participant.id ? (
+                <Box
+                  key={participant.id}
+                  position="relative"
+                  borderRadius="lg"
+                  overflow="hidden"
+                  bg="black"
+                  aspectRatio={16/9}
+                >
+                  <video
+                    ref={participant.id === user?.id ? localVideoRef : undefined}
+                    autoPlay
+                    muted={participant.id === user?.id}
+                    playsInline
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover'
+                    }}
+                  />
+                  <Box
+                    position="absolute"
+                    bottom={2}
+                    left={2}
+                    right={2}
+                    px={2}
+                    py={1}
+                    bg="blackAlpha.600"
+                    borderRadius="md"
+                    color="white"
+                  >
+                    <Flex justify="space-between" align="center">
+                      <Text>{participant.username} {participant.id === user?.id ? '(You)' : ''}</Text>
+                      <HStack spacing={2}>
+                        {!participant.audioEnabled && (
+                          <Box as={MicrophoneIcon} w={4} h={4} color="red.500" />
+                        )}
+                        {!participant.videoEnabled && (
+                          <Box as={VideoCameraIcon} w={4} h={4} color="red.500" />
+                        )}
+                        {participant.isScreenSharing && (
+                          <Box as={ShareIcon} w={4} h={4} color="green.500" />
+                        )}
+                      </HStack>
+                    </Flex>
+                  </Box>
+                </Box>
+              ) : null
+            ))}
+          </Grid>
+        </Box>
 
         {/* Right Sidebar */}
-        <Drawer
-          isOpen={isOpen}
-          placement="right"
-          onClose={onClose}
-          size="md"
+        <Box
+          w="300px"
+          h="full"
+          bg={sidebarBg}
+          borderLeft="1px"
+          borderColor={borderColor}
+          p={4}
         >
-          <DrawerOverlay />
-          <DrawerContent>
-            <DrawerCloseButton />
-            <DrawerHeader p={4}>
-              <Tabs
-                isFitted
-                variant="enclosed"
-                onChange={(index) => setActiveTab(['chat', 'participants', 'whiteboard'][index] as any)}
-              >
-                <TabList>
-                  <Tab>Chat</Tab>
-                  <Tab>Participants</Tab>
-                  <Tab>Whiteboard</Tab>
-                </TabList>
-              </Tabs>
-            </DrawerHeader>
-
-            <DrawerBody p={0}>
-              <TabPanels>
-                {/* Chat Panel */}
-                <TabPanel>
-                  <VStack h="full" spacing={4}>
-                    <Box flex={1} w="full" overflowY="auto" p={4}>
-                      {messages.map(message => (
-                        <Box
-                          key={message.id}
-                          mb={4}
-                          p={2}
-                          bg={message.sender === user?.username ? 'brand.100' : 'gray.100'}
-                          borderRadius="md"
-                        >
-                          <Text fontWeight="bold" fontSize="sm">{message.sender}</Text>
-                          <Text>{message.content}</Text>
-                          <Text fontSize="xs" color="gray.500">
-                            {new Date(message.timestamp).toLocaleTimeString()}
-                          </Text>
-                        </Box>
-                      ))}
+          <VStack spacing={4} h="full">
+            <Text fontSize="lg" fontWeight="bold">Participants</Text>
+            <List spacing={2} w="full">
+              {participants.map(participant => (
+                <ListItem
+                  key={participant.id}
+                  p={2}
+                  bg={focusedParticipant === participant.id ? 'brand.100' : 'transparent'}
+                  borderRadius="md"
+                  cursor="pointer"
+                  onClick={() => handleParticipantClick(participant.id)}
+                  _hover={{ bg: 'brand.50' }}
+                >
+                  <Flex align="center" gap={3}>
+                    <Avatar size="sm" name={participant.username} />
+                    <Box flex={1}>
+                      <Text>{participant.username} {participant.id === user?.id ? '(You)' : ''}</Text>
+                      <HStack spacing={1}>
+                        {!participant.audioEnabled && (
+                          <Badge colorScheme="red" variant="subtle">Muted</Badge>
+                        )}
+                        {!participant.videoEnabled && (
+                          <Badge colorScheme="red" variant="subtle">Video Off</Badge>
+                        )}
+                        {participant.isScreenSharing && (
+                          <Badge colorScheme="green" variant="subtle">Sharing</Badge>
+                        )}
+                      </HStack>
                     </Box>
-                    <HStack w="full" p={4} borderTop="1px" borderColor={borderColor}>
-                      <Input
-                        value={newMessage}
-                        onChange={(e) => setNewMessage(e.target.value)}
-                        placeholder="Type a message..."
-                        onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                      />
-                      <Button onClick={handleSendMessage}>Send</Button>
-                    </HStack>
-                  </VStack>
-                </TabPanel>
+                  </Flex>
+                </ListItem>
+              ))}
+            </List>
 
-                {/* Participants Panel */}
-                <TabPanel>
-                  <List spacing={3}>
-                    {participants.map(participant => (
-                      <ListItem
-                        key={participant.id}
-                        p={2}
-                        display="flex"
-                        alignItems="center"
-                        gap={3}
-                      >
-                        <Avatar size="sm" name={participant.username} />
-                        <Text>{participant.username}</Text>
-                        <HStack ml="auto">
-                          {!participant.audioEnabled && (
-                            <Badge colorScheme="red">Muted</Badge>
-                          )}
-                          {!participant.videoEnabled && (
-                            <Badge colorScheme="red">Video Off</Badge>
-                          )}
-                        </HStack>
-                      </ListItem>
-                    ))}
-                  </List>
-                </TabPanel>
+            <Divider />
 
-                {/* Whiteboard Panel */}
-                <TabPanel>
-                  <Box ref={whiteboardRef} w="full" h="full" bg="white">
-                    {/* Add whiteboard implementation here */}
-                  </Box>
-                </TabPanel>
-              </TabPanels>
-            </DrawerBody>
-          </DrawerContent>
-        </Drawer>
+            <Box w="full">
+              <Text fontSize="lg" fontWeight="bold" mb={2}>Quick Actions</Text>
+              <VStack spacing={2}>
+                <Button
+                  w="full"
+                  leftIcon={<Box as={focusedParticipant ? UsersIcon : ShareIcon} w={5} h={5} />}
+                  onClick={() => setFocusedParticipant(null)}
+                  variant="outline"
+                >
+                  {focusedParticipant ? 'Show All' : 'Share Screen'}
+                </Button>
+                <Button
+                  w="full"
+                  leftIcon={<Box as={ChatIcon} w={5} h={5} />}
+                  onClick={onOpen}
+                  variant="outline"
+                >
+                  Open Chat
+                </Button>
+              </VStack>
+            </Box>
+          </VStack>
+        </Box>
       </Flex>
 
       {/* Bottom Controls */}
@@ -468,15 +529,6 @@ const VideoRoom: React.FC = () => {
           onClick={onOpen}
         />
         <IconButton
-          aria-label="Toggle whiteboard"
-          icon={<Box as={PencilIcon} w={6} h={6} />}
-          colorScheme={activeTab === 'whiteboard' ? 'brand' : 'gray'}
-          onClick={() => {
-            onOpen();
-            setActiveTab('whiteboard');
-          }}
-        />
-        <IconButton
           aria-label="Record"
           icon={<Box as="span" w={3} h={3} borderRadius="full" bg={isRecording ? 'red.500' : 'gray.500'} />}
           colorScheme={isRecording ? 'red' : 'gray'}
@@ -489,6 +541,65 @@ const VideoRoom: React.FC = () => {
           onClick={handleLeaveRoom}
         />
       </Flex>
+
+      {/* Chat Drawer */}
+      <Drawer isOpen={isOpen} placement="right" onClose={onClose} size="md">
+        <DrawerOverlay />
+        <DrawerContent>
+          <DrawerCloseButton />
+          <DrawerHeader>
+            <Tabs isFitted onChange={(index) => setActiveTab(index === 0 ? 'chat' : 'whiteboard')}>
+              <TabList>
+                <Tab>Chat</Tab>
+                <Tab>Whiteboard</Tab>
+              </TabList>
+            </Tabs>
+          </DrawerHeader>
+
+          <DrawerBody p={0}>
+            <TabPanels>
+              {/* Chat Panel */}
+              <TabPanel>
+                <VStack h="full" spacing={4}>
+                  <Box flex={1} w="full" overflowY="auto" p={4}>
+                    {messages.map(message => (
+                      <Box
+                        key={message.id}
+                        mb={4}
+                        p={2}
+                        bg={message.sender === user?.username ? 'brand.100' : 'gray.100'}
+                        borderRadius="md"
+                      >
+                        <Text fontWeight="bold" fontSize="sm">{message.sender}</Text>
+                        <Text>{message.content}</Text>
+                        <Text fontSize="xs" color="gray.500">
+                          {new Date(message.timestamp).toLocaleTimeString()}
+                        </Text>
+                      </Box>
+                    ))}
+                  </Box>
+                  <HStack w="full" p={4} borderTop="1px" borderColor={borderColor}>
+                    <Input
+                      value={newMessage}
+                      onChange={(e) => setNewMessage(e.target.value)}
+                      placeholder="Type a message..."
+                      onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                    />
+                    <Button onClick={handleSendMessage}>Send</Button>
+                  </HStack>
+                </VStack>
+              </TabPanel>
+
+              {/* Whiteboard Panel */}
+              <TabPanel>
+                <Box ref={whiteboardRef} w="full" h="full" bg="white">
+                  {/* Add whiteboard implementation here */}
+                </Box>
+              </TabPanel>
+            </TabPanels>
+          </DrawerBody>
+        </DrawerContent>
+      </Drawer>
     </Box>
   );
 };
