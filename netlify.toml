@@ -1,7 +1,11 @@
 [build]
   base = "frontend"
   command = "npm install && npm run build"
-  publish = "frontend/dist"
+  publish = "dist"
+
+[build.environment]
+  VITE_API_URL = "https://connectlive-backend.onrender.com"
+  VITE_SOCKET_SERVER_URL = "https://connectlive-backend.onrender.com"
 
 [[redirects]]
   from = "/*"
