@@ -85,7 +85,7 @@ interface RoomUser {
 const MotionBox = motion(Box);
 
 // Update the constant to use Vite's environment variables
-const SOCKET_SERVER = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5000';
+const SOCKET_SERVER = import.meta.env.VITE_SOCKET_SERVER_URL || 'https://connectlive-backend.onrender.com';
 
 const Meeting: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>();

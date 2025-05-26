@@ -5,7 +5,8 @@ const initializeSocket = (server) => {
     cors: {
       origin: ["http://localhost:5173", "https://connectlive-app.netlify.app"],
       methods: ["GET", "POST"],
-      credentials: true
+      credentials: true,
+      allowedHeaders: ["Content-Type", "Authorization"]
     }
   });
 

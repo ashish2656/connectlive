@@ -5,6 +5,7 @@ const dotenv = require('dotenv');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
+const initializeSocket = require('./socket');
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -23,16 +24,14 @@ const server = http.createServer(app);
 // CORS Configuration
 const allowedOrigins = [
   'http://localhost:3000',
-  'https://connectlive-psi.vercel.app',
-  'https://connectlive.vercel.app',
-  'https://connectlive-git-main-ashishs-projects-9530e095.vercel.app',
-  'https://connectlive-np2kfuavr-ashishs-projects-9530e095.vercel.app',
+  'http://localhost:5173',
+  'https://connectlive-app.netlify.app',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
 // CORS Middleware with detailed configuration
 app.use(cors({
-  origin: '*', // Allow all origins temporarily for debugging
+  origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
@@ -43,7 +42,7 @@ app.use(cors({
 // Socket.IO Configuration
 const io = socketIo(server, {
   cors: {
-    origin: '*', // Allow all origins temporarily for debugging
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
@@ -87,7 +86,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
