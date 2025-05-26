@@ -17,7 +17,7 @@ services:
         sync: false
   - type: static
     name: connectlive-frontend
-    rootDir: frontend-new
+    rootDir: frontend
     buildCommand: npm install && npm run build
     publishDir: dist
     envVars:
