@@ -73,10 +73,8 @@ interface PeerConnection {
 
 const MotionBox = motion(Box);
 
-// Add this constant at the top of the file, after imports
-const SOCKET_SERVER = import.meta.env.PROD 
-  ? 'https://your-backend-url.com'  // Replace with your deployed backend URL
-  : 'http://localhost:5000';
+// Update the constant to use Vite's environment variables
+const SOCKET_SERVER = import.meta.env.VITE_SOCKET_SERVER_URL || 'http://localhost:5000';
 
 const Meeting: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>();
