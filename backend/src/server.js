@@ -50,14 +50,7 @@ app.use(cors({
 }));
 
 // Socket.IO Configuration
-const io = socketIo(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-  }
-});
+const io = initializeSocket(server);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

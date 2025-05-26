@@ -43,6 +43,7 @@ const Home: React.FC = () => {
   const borderColor = useColorModeValue('gray.200', 'gray.700');
 
   const handleCreateMeeting = () => {
+    setIsLoading(true);
     const meetingId = uuidv4().substring(0, 8); // Create a shorter meeting ID
     
     // Connect to socket server and create meeting
@@ -56,11 +57,13 @@ const Home: React.FC = () => {
     });
 
     socket.on('meeting-created', () => {
+      setIsLoading(false);
       navigate(`/meeting/${meetingId}`);
       socket.disconnect();
     });
 
     socket.on('room-error', ({ message }) => {
+      setIsLoading(false);
       toast({
         title: 'Error',
         description: message,
@@ -70,6 +73,33 @@ const Home: React.FC = () => {
       });
       socket.disconnect();
     });
+
+    socket.on('connect_error', (error) => {
+      setIsLoading(false);
+      toast({
+        title: 'Connection Error',
+        description: 'Failed to connect to server. Please try again.',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      socket.disconnect();
+    });
+
+    // Add a timeout to handle cases where the server doesn't respond
+    setTimeout(() => {
+      if (socket.connected) {
+        setIsLoading(false);
+        toast({
+          title: 'Error',
+          description: 'Request timed out. Please try again.',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+        socket.disconnect();
+      }
+    }, 10000); // 10 second timeout
   };
 
   const handleJoinMeeting = () => {
@@ -151,6 +181,7 @@ const Home: React.FC = () => {
                   width="100%"
                   height="60px"
                   onClick={handleCreateMeeting}
+                  isLoading={isLoading}
                 >
                   Create New Meeting
                 </Button>
