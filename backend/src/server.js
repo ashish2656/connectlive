@@ -20,19 +20,42 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+
+// CORS Configuration
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://connectlive-psi.vercel.app',
+  'https://connectlive.vercel.app',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+// Socket.IO Configuration
 const io = socketIo(server, {
   cors: {
-    origin: [process.env.FRONTEND_URL || 'http://localhost:3000', 'https://connectlive.vercel.app'],
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
   }
 });
 
-// Middleware
+// CORS Middleware
 app.use(cors({
-  origin: [process.env.FRONTEND_URL || 'http://localhost:3000', 'https://connectlive.vercel.app'],
-  credentials: true
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
