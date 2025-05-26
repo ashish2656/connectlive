@@ -62,6 +62,9 @@ const io = socketIo(server, {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Add OPTIONS pre-flight handler
+app.options('*', cors());
+
 // Database connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/connectlive')
   .then(() => console.log('Connected to MongoDB'))

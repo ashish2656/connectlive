@@ -21,6 +21,16 @@ const initializeSocket = (server) => {
     console.log('User connected:', socket.id);
 
     socket.on('join-room', ({ roomId, userId, username }) => {
+      console.log(`User ${username} (${userId}) attempting to join room ${roomId}`);
+      
+      // Leave any existing rooms
+      socket.rooms.forEach(room => {
+        if (room !== socket.id) {
+          socket.leave(room);
+        }
+      });
+
+      // Join the new room
       socket.join(roomId);
       
       // Initialize room if it doesn't exist
@@ -29,7 +39,8 @@ const initializeSocket = (server) => {
       }
 
       // Store user details in the room
-      rooms.get(roomId).set(userId, {
+      const roomParticipants = rooms.get(roomId);
+      roomParticipants.set(userId, {
         socketId: socket.id,
         username: username,
         isAudioEnabled: true,
@@ -38,15 +49,22 @@ const initializeSocket = (server) => {
         isHandRaised: false
       });
 
+      // Log room participants
+      console.log(`Room ${roomId} participants:`, Array.from(roomParticipants.entries()));
+
       // Notify others in the room
       socket.to(roomId).emit('user-joined', {
         userId,
         username,
-        socketId: socket.id
+        socketId: socket.id,
+        isAudioEnabled: true,
+        isVideoEnabled: true,
+        isScreenSharing: false,
+        isHandRaised: false
       });
 
       // Send list of connected users to the new participant
-      const participants = Array.from(rooms.get(roomId).entries()).map(([userId, user]) => ({
+      const participants = Array.from(roomParticipants.entries()).map(([userId, user]) => ({
         userId,
         username: user.username,
         isAudioEnabled: user.isAudioEnabled,
@@ -55,8 +73,9 @@ const initializeSocket = (server) => {
         isHandRaised: user.isHandRaised
       }));
       
-      io.to(socket.id).emit('room-users', participants);
-      console.log(`User ${username} (${userId}) joined room ${roomId}`);
+      // Emit room users to everyone in the room
+      io.to(roomId).emit('room-users', participants);
+      console.log(`Sent participants list to room ${roomId}:`, participants);
     });
 
     socket.on('disconnect', () => {
@@ -67,6 +86,17 @@ const initializeSocket = (server) => {
             participants.delete(userId);
             socket.to(roomId).emit('user-disconnected', userId);
             console.log(`User ${user.username} (${userId}) left room ${roomId}`);
+
+            // Send updated participants list
+            const updatedParticipants = Array.from(participants.entries()).map(([id, user]) => ({
+              userId: id,
+              username: user.username,
+              isAudioEnabled: user.isAudioEnabled,
+              isVideoEnabled: user.isVideoEnabled,
+              isScreenSharing: user.isScreenSharing,
+              isHandRaised: user.isHandRaised
+            }));
+            io.to(roomId).emit('room-users', updatedParticipants);
           }
         });
         // Clean up empty rooms
@@ -76,48 +106,75 @@ const initializeSocket = (server) => {
       });
     });
 
-    socket.on('sending-signal', ({ userToSignal, signal }) => {
-      io.to(userToSignal).emit('user-joined', { signal, callerId: socket.id });
-    });
-
-    socket.on('returning-signal', ({ callerID, signal }) => {
-      io.to(callerID).emit('receiving-returned-signal', { signal, id: socket.id });
-    });
-
-    socket.on('send-message', (message) => {
-      const roomId = Array.from(socket.rooms)[1];
-      if (roomId) {
-        socket.to(roomId).emit('receive-message', message);
-      }
-    });
-
-    socket.on('hand-raised', ({ userId, isRaised, roomId }) => {
+    socket.on('toggle-media', ({ userId, roomId, type, enabled }) => {
       if (roomId && rooms.has(roomId)) {
-        const participant = rooms.get(roomId).get(userId);
+        const roomParticipants = rooms.get(roomId);
+        const participant = roomParticipants.get(userId);
         if (participant) {
-          participant.isHandRaised = isRaised;
-          socket.to(roomId).emit('user-hand-raised', { userId, isRaised });
+          if (type === 'audio') participant.isAudioEnabled = enabled;
+          if (type === 'video') participant.isVideoEnabled = enabled;
+          
+          // Notify all participants in the room about the media change
+          io.to(roomId).emit('user-media-toggle', { userId, type, enabled });
+          
+          // Send updated participants list
+          const updatedParticipants = Array.from(roomParticipants.entries()).map(([id, user]) => ({
+            userId: id,
+            username: user.username,
+            isAudioEnabled: user.isAudioEnabled,
+            isVideoEnabled: user.isVideoEnabled,
+            isScreenSharing: user.isScreenSharing,
+            isHandRaised: user.isHandRaised
+          }));
+          io.to(roomId).emit('room-users', updatedParticipants);
         }
       }
     });
 
-    socket.on('toggle-media', ({ userId, roomId, type, enabled }) => {
+    socket.on('hand-raised', ({ userId, roomId, isRaised }) => {
       if (roomId && rooms.has(roomId)) {
-        const participant = rooms.get(roomId).get(userId);
+        const roomParticipants = rooms.get(roomId);
+        const participant = roomParticipants.get(userId);
         if (participant) {
-          if (type === 'audio') participant.isAudioEnabled = enabled;
-          if (type === 'video') participant.isVideoEnabled = enabled;
-          socket.to(roomId).emit('user-media-toggle', { userId, type, enabled });
+          participant.isHandRaised = isRaised;
+          
+          // Notify all participants about the hand raise
+          io.to(roomId).emit('user-hand-raised', { userId, isRaised });
+          
+          // Send updated participants list
+          const updatedParticipants = Array.from(roomParticipants.entries()).map(([id, user]) => ({
+            userId: id,
+            username: user.username,
+            isAudioEnabled: user.isAudioEnabled,
+            isVideoEnabled: user.isVideoEnabled,
+            isScreenSharing: user.isScreenSharing,
+            isHandRaised: user.isHandRaised
+          }));
+          io.to(roomId).emit('room-users', updatedParticipants);
         }
       }
     });
 
     socket.on('toggle-screen-share', ({ userId, roomId, isSharing }) => {
       if (roomId && rooms.has(roomId)) {
-        const participant = rooms.get(roomId).get(userId);
+        const roomParticipants = rooms.get(roomId);
+        const participant = roomParticipants.get(userId);
         if (participant) {
           participant.isScreenSharing = isSharing;
-          socket.to(roomId).emit('user-screen-share', { userId, isSharing });
+          
+          // Notify all participants about the screen share
+          io.to(roomId).emit('user-screen-share', { userId, isSharing });
+          
+          // Send updated participants list
+          const updatedParticipants = Array.from(roomParticipants.entries()).map(([id, user]) => ({
+            userId: id,
+            username: user.username,
+            isAudioEnabled: user.isAudioEnabled,
+            isVideoEnabled: user.isVideoEnabled,
+            isScreenSharing: user.isScreenSharing,
+            isHandRaised: user.isHandRaised
+          }));
+          io.to(roomId).emit('room-users', updatedParticipants);
         }
       }
     });
