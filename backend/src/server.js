@@ -8,9 +8,10 @@ const path = require('path');
 const initializeSocket = require('./socket');
 
 // Routes
-const authRoutes = require('./routes/auth');
-const friendRoutes = require('./routes/friends');
-const usersRoutes = require('./routes/users');
+const authRoutes = require('./routes/authRoutes');
+const userRoutes = require('./routes/userRoutes');
+const friendRoutes = require('./routes/friendRoutes');
+const tokenRoutes = require('./routes/tokenRoutes');
 
 // Middleware
 const { authenticateToken } = require('./middleware/auth');
@@ -66,8 +67,9 @@ app.get('/', (req, res) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/friends', authenticateToken, friendRoutes);
-app.use('/api/users', authenticateToken, usersRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/friends', friendRoutes);
+app.use('/api/token', tokenRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

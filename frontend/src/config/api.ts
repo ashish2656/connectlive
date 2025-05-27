@@ -58,6 +58,9 @@ export const API_ENDPOINTS = {
     remove: `/api/friends`,
     requests: `/api/friends/requests`,
   },
+  token: {
+    get: `/api/token/get-token`,
+  },
 };
 
 export default API_ENDPOINTS; 
