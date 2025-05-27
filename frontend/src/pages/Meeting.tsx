@@ -112,8 +112,8 @@ interface PeerSignalEvent {
 
 const MotionBox = motion(Box);
 
-// Update the constant to use Vite's environment variables
-const SOCKET_SERVER = import.meta.env.VITE_SOCKET_SERVER_URL || 'https://connectlive-backend.onrender.com';
+// Update the constant to use the correct socket server URL
+const SOCKET_SERVER = 'https://connectlive-backend.onrender.com';
 
 const configuration = {
   iceServers: [
