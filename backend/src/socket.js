@@ -1,18 +1,29 @@
 const { Server } = require('socket.io');
 const Meeting = require('./models/Meeting');
 
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://connectlive-app.netlify.app',
+  'https://frabjous-praline-6015b8.netlify.app'
+];
+
 const initializeSocket = (server) => {
   const io = new Server(server, {
     cors: {
-      origin: [
-        "http://localhost:5173",
-        "https://connectlive-app.netlify.app",
-        "https://frabjous-praline-6015b8.netlify.app"
-      ],
-      methods: ["GET", "POST"],
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       credentials: true,
-      allowedHeaders: ["Content-Type", "Authorization"]
-    }
+      allowedHeaders: ['Content-Type', 'Authorization']
+    },
+    allowEIO3: true,
+    transports: ['websocket', 'polling']
   });
 
   // Store rooms with participant details
