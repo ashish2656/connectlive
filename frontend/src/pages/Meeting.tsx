@@ -93,6 +93,26 @@ const MotionBox = motion(Box);
 // Update the constant to use Vite's environment variables
 const SOCKET_SERVER = import.meta.env.VITE_SOCKET_SERVER_URL || 'https://connectlive-backend.onrender.com';
 
+const configuration = {
+  iceServers: [
+    {
+      urls: [
+        'stun:stun1.l.google.com:19302',
+        'stun:stun2.l.google.com:19302',
+      ],
+    },
+    {
+      urls: [
+        'turn:turn.connectlive.com:3478',
+        'turn:turn.connectlive.com:5349'
+      ],
+      username: 'connectlive',
+      credential: 'your_turn_secret'  // Replace with actual TURN credentials
+    }
+  ],
+  iceCandidatePoolSize: 10,
+};
+
 const Meeting: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>();
   const { user } = useAuth();
@@ -210,22 +230,17 @@ const Meeting: React.FC = () => {
           console.log('User joined:', userId, username, socketId);
           
           // Create a new peer connection for the joined user
+          console.log('Creating new peer connection for:', userId, username);
           const peer = new Peer({
             initiator: true,
-            trickle: false,
+            trickle: true,
             stream: streamRef.current,
-            config: {
-              iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' }
-              ]
-            }
+            config: configuration
           });
 
+          // Add peer connection event handlers
           peer.on('signal', signal => {
+            console.log('Sending signal to peer:', userId);
             socketRef.current?.emit('peer-signal', {
               userToSignal: socketId,
               callerId: user?.id,
@@ -234,6 +249,7 @@ const Meeting: React.FC = () => {
           });
 
           peer.on('stream', stream => {
+            console.log('Received stream from peer:', userId);
             setParticipants(prev => {
               const participantIndex = prev.findIndex(p => p.id === userId);
               if (participantIndex !== -1) {
@@ -257,6 +273,26 @@ const Meeting: React.FC = () => {
                 }
               ];
             });
+          });
+
+          peer.on('error', error => {
+            console.error('Peer connection error:', error);
+            toast({
+              title: 'Connection Error',
+              description: 'Failed to connect to peer. Please try rejoining the meeting.',
+              status: 'error',
+              duration: 5000,
+              isClosable: true,
+            });
+          });
+
+          peer.on('connect', () => {
+            console.log('Peer connection established with:', userId);
+          });
+
+          peer.on('close', () => {
+            console.log('Peer connection closed with:', userId);
+            setParticipants(prev => prev.filter(p => p.id !== userId));
           });
 
           peersRef.current.push({
@@ -323,22 +359,16 @@ const Meeting: React.FC = () => {
         });
 
         socketRef.current.on('receive-signal', ({ signal, id }) => {
+          console.log('Received signal from:', id);
           const peer = new Peer({
             initiator: false,
-            trickle: false,
+            trickle: true,
             stream: streamRef.current,
-            config: {
-              iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' }
-              ]
-            }
+            config: configuration
           });
 
           peer.on('signal', signal => {
+            console.log('Sending signal back to:', id);
             socketRef.current?.emit('peer-signal', {
               userToSignal: id,
               callerId: user?.id,
@@ -347,6 +377,7 @@ const Meeting: React.FC = () => {
           });
 
           peer.on('stream', stream => {
+            console.log('Received stream from peer:', id);
             setParticipants(prev => {
               const participantIndex = prev.findIndex(p => p.id === id);
               if (participantIndex !== -1) {
@@ -359,6 +390,21 @@ const Meeting: React.FC = () => {
               }
               return prev;
             });
+          });
+
+          peer.on('error', error => {
+            console.error('Peer connection error:', error);
+            toast({
+              title: 'Connection Error',
+              description: 'Failed to connect to peer. Please try rejoining the meeting.',
+              status: 'error',
+              duration: 5000,
+              isClosable: true,
+            });
+          });
+
+          peer.on('connect', () => {
+            console.log('Peer connection established with:', id);
           });
 
           peer.signal(signal);
@@ -719,9 +765,23 @@ const Meeting: React.FC = () => {
                     <video
                       autoPlay
                       playsInline
+                      muted={false}
                       ref={video => {
                         if (video && participant.stream) {
                           video.srcObject = participant.stream;
+                          video.onloadedmetadata = () => {
+                            console.log(`Remote video loaded for: ${participant.username}`);
+                            video.play().catch(err => {
+                              console.error(`Error playing remote video for ${participant.username}:`, err);
+                              toast({
+                                title: 'Video Playback Error',
+                                description: `Failed to play video for ${participant.username}. Please try refreshing.`,
+                                status: 'error',
+                                duration: 5000,
+                                isClosable: true,
+                              });
+                            });
+                          };
                         }
                       }}
                       style={{ width: '100%', height: '100%', objectFit: 'cover' }}
