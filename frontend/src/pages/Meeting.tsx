@@ -56,7 +56,8 @@ import {
   selectIsLocalVideoEnabled,
   selectLocalPeerRole,
   HMSPeer,
-  HMSTrack,
+  useAVToggle,
+  selectPeerByID,
 } from '@100mslive/react-sdk';
 
 interface ChatMessage {
@@ -79,8 +80,7 @@ const Meeting: React.FC = () => {
   const peers = useHMSStore(selectPeers);
   const isConnected = useHMSStore(selectIsConnectedToRoom);
   const localPeer = useHMSStore(selectLocalPeer);
-  const isAudioEnabled = useHMSStore(selectIsLocalAudioEnabled);
-  const isVideoEnabled = useHMSStore(selectIsLocalVideoEnabled);
+  const { isLocalAudioEnabled, isLocalVideoEnabled, toggleAudio: toggleAudioState, toggleVideo: toggleVideoState } = useAVToggle();
   const role = useHMSStore(selectLocalPeerRole);
 
   // State
@@ -162,9 +162,9 @@ const Meeting: React.FC = () => {
   };
 
   // Handlers
-  const toggleAudio = async () => {
+  const handleToggleAudio = async () => {
     try {
-      await hmsActions.setLocalAudioEnabled(!isAudioEnabled);
+      await toggleAudioState();
     } catch (err) {
       console.error('Error toggling audio:', err);
       toast({
@@ -176,9 +176,9 @@ const Meeting: React.FC = () => {
     }
   };
 
-  const toggleVideo = async () => {
+  const handleToggleVideo = async () => {
     try {
-      await hmsActions.setLocalVideoEnabled(!isVideoEnabled);
+      await toggleVideoState();
     } catch (err) {
       console.error('Error toggling video:', err);
       toast({
@@ -190,13 +190,9 @@ const Meeting: React.FC = () => {
     }
   };
 
-  const toggleScreenShare = async () => {
+  const handleToggleScreenShare = async () => {
     try {
-      if (!isScreenSharing) {
-        await hmsActions.setScreenShareEnabled(true);
-      } else {
-        await hmsActions.setScreenShareEnabled(false);
-      }
+      await hmsActions.setScreenShareEnabled(!isScreenSharing);
       setIsScreenSharing(!isScreenSharing);
     } catch (err) {
       console.error('Error toggling screen share:', err);
@@ -253,6 +249,22 @@ const Meeting: React.FC = () => {
     } catch (err) {
       console.error('Error leaving meeting:', err);
     }
+  };
+
+  // Update track selectors
+  const getPeerAudioEnabled = (peerId: string) => {
+    const peer = useHMSStore(selectPeerByID(peerId));
+    return peer?.audioTrack?.enabled ?? false;
+  };
+
+  const getPeerVideoEnabled = (peerId: string) => {
+    const peer = useHMSStore(selectPeerByID(peerId));
+    return peer?.videoTrack?.enabled ?? false;
+  };
+
+  const getPeerScreenShareEnabled = (peerId: string) => {
+    const peer = useHMSStore(selectPeerByID(peerId));
+    return peer?.auxiliaryTracks?.some(track => track.enabled && track.source === 'screen') ?? false;
   };
 
   // Loading state
@@ -348,8 +360,8 @@ const Meeting: React.FC = () => {
                   <Flex justify="space-between" align="center">
                     <Text fontSize="sm">{peer.name} {peer.isLocal ? '(You)' : ''}</Text>
                     <HStack spacing={1}>
-                      {!(peer.audioTrack as HMSTrack)?.enabled && <MicrophoneSlashIcon width={16} />}
-                      {!(peer.videoTrack as HMSTrack)?.enabled && <VideoCameraSlashIcon width={16} />}
+                      {!isLocalAudioEnabled && <MicrophoneSlashIcon width={16} />}
+                      {!isLocalVideoEnabled && <VideoCameraSlashIcon width={16} />}
                     </HStack>
                   </Flex>
                 </Box>
@@ -372,20 +384,20 @@ const Meeting: React.FC = () => {
             justify="center"
             gap={4}
           >
-            <Tooltip label={isAudioEnabled ? 'Mute' : 'Unmute'}>
+            <Tooltip label={isLocalAudioEnabled ? 'Mute' : 'Unmute'}>
               <IconButton
                 aria-label="Toggle microphone"
-                icon={isAudioEnabled ? <Box as={MicrophoneIcon} w={6} h={6} /> : <Box as={MicrophoneSlashIcon} w={6} h={6} />}
-                colorScheme={isAudioEnabled ? 'gray' : 'red'}
-                onClick={toggleAudio}
+                icon={isLocalAudioEnabled ? <Box as={MicrophoneIcon} w={6} h={6} /> : <Box as={MicrophoneSlashIcon} w={6} h={6} />}
+                colorScheme={isLocalAudioEnabled ? 'gray' : 'red'}
+                onClick={handleToggleAudio}
               />
             </Tooltip>
-            <Tooltip label={isVideoEnabled ? 'Stop Video' : 'Start Video'}>
+            <Tooltip label={isLocalVideoEnabled ? 'Stop Video' : 'Start Video'}>
               <IconButton
                 aria-label="Toggle camera"
-                icon={isVideoEnabled ? <Box as={VideoCameraIcon} w={6} h={6} /> : <Box as={VideoCameraSlashIcon} w={6} h={6} />}
-                colorScheme={isVideoEnabled ? 'gray' : 'red'}
-                onClick={toggleVideo}
+                icon={isLocalVideoEnabled ? <Box as={VideoCameraIcon} w={6} h={6} /> : <Box as={VideoCameraSlashIcon} w={6} h={6} />}
+                colorScheme={isLocalVideoEnabled ? 'gray' : 'red'}
+                onClick={handleToggleVideo}
               />
             </Tooltip>
             <Tooltip label={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}>
@@ -393,7 +405,7 @@ const Meeting: React.FC = () => {
                 aria-label="Share screen"
                 icon={<Box as={ShareIcon} w={6} h={6} />}
                 colorScheme={isScreenSharing ? 'brand' : 'gray'}
-                onClick={toggleScreenShare}
+                onClick={handleToggleScreenShare}
               />
             </Tooltip>
             <Tooltip label={isHandRaised ? 'Lower Hand' : 'Raise Hand'}>
@@ -443,9 +455,9 @@ const Meeting: React.FC = () => {
                           <Box flex={1}>
                             <Text fontWeight="medium">{peer.name} {peer.isLocal ? '(You)' : ''}</Text>
                             <HStack spacing={1}>
-                              {!(peer.audioTrack as HMSTrack)?.enabled && <Badge colorScheme="red">Muted</Badge>}
-                              {!(peer.videoTrack as HMSTrack)?.enabled && <Badge colorScheme="red">Video Off</Badge>}
-                              {(peer.auxiliaryTracks as HMSTrack[])?.some(track => (track as any).source === 'screen') && (
+                              {!getPeerAudioEnabled(peer.id) && <Badge colorScheme="red">Muted</Badge>}
+                              {!getPeerVideoEnabled(peer.id) && <Badge colorScheme="red">Video Off</Badge>}
+                              {getPeerScreenShareEnabled(peer.id) && (
                                 <Badge colorScheme="green">Sharing</Badge>
                               )}
                               {peer.metadata && JSON.parse(peer.metadata).isHandRaised && (
