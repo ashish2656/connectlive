@@ -142,13 +142,32 @@ const Meeting: React.FC = () => {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
+        }).catch((err) => {
+          console.error('Error getting media stream:', err);
+          toast({
+            title: 'Media Error',
+            description: `Failed to access camera/microphone: ${err.message}`,
+            status: 'error',
+            duration: 5000,
+            isClosable: true,
+          });
+          throw err;
         });
+
         console.log('Media stream obtained:', stream.id);
+        console.log('Audio tracks:', stream.getAudioTracks().length);
+        console.log('Video tracks:', stream.getVideoTracks().length);
+        
         streamRef.current = stream;
         
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-          console.log('Local video stream set');
+          localVideoRef.current.onloadedmetadata = () => {
+            console.log('Local video stream loaded');
+            localVideoRef.current?.play().catch(err => {
+              console.error('Error playing local video:', err);
+            });
+          };
         }
 
         // Connect to socket server
@@ -156,6 +175,11 @@ const Meeting: React.FC = () => {
         socketRef.current = io(SOCKET_SERVER, {
           withCredentials: true,
           transports: ['websocket', 'polling'],
+          reconnection: true,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 1000,
+          timeout: 20000,
+          forceNew: true
         });
 
         // Socket event handlers
@@ -189,7 +213,16 @@ const Meeting: React.FC = () => {
           const peer = new Peer({
             initiator: true,
             trickle: false,
-            stream: streamRef.current
+            stream: streamRef.current,
+            config: {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' }
+              ]
+            }
           });
 
           peer.on('signal', signal => {
@@ -293,7 +326,16 @@ const Meeting: React.FC = () => {
           const peer = new Peer({
             initiator: false,
             trickle: false,
-            stream: streamRef.current
+            stream: streamRef.current,
+            config: {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' }
+              ]
+            }
           });
 
           peer.on('signal', signal => {
@@ -325,6 +367,12 @@ const Meeting: React.FC = () => {
             peerId: id,
             peer
           });
+        });
+
+        // Add chat message socket events
+        socketRef.current.on('chat-message', (message: ChatMessage) => {
+          console.log('Received chat message:', message);
+          setMessages(prev => [...prev, message]);
         });
 
         setIsLoading(false);
@@ -509,8 +557,12 @@ const Meeting: React.FC = () => {
       timestamp: new Date(),
     };
 
-    socketRef.current?.emit('send-message', message);
-    setMessages([...messages, message]);
+    socketRef.current?.emit('chat-message', {
+      ...message,
+      roomId: meetingId
+    });
+    
+    setMessages(prev => [...prev, message]);
     setNewMessage('');
   };
 

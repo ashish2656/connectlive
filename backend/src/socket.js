@@ -231,6 +231,16 @@ const initializeSocket = (server) => {
         socket.emit('room-error', { message: 'Failed to create meeting. Please try again.' });
       }
     });
+
+    // Handle chat messages
+    socket.on('chat-message', (message) => {
+      const { roomId } = message;
+      if (roomId && rooms.has(roomId)) {
+        // Broadcast the message to all users in the room
+        socket.to(roomId).emit('chat-message', message);
+        console.log(`Chat message sent in room ${roomId}:`, message);
+      }
+    });
   });
 
   return io;
