@@ -94,6 +94,20 @@ interface PeerOptions {
   trickle: boolean;
   stream?: MediaStream;
   config: RTCConfiguration;
+  objectMode: boolean;
+  sdpTransform: (sdp: string) => string;
+}
+
+// Update SignalData interface
+type SignalData = string | {
+  type: 'offer' | 'answer' | 'candidate';
+  sdp?: string;
+  candidate?: RTCIceCandidateInit;
+};
+
+interface PeerSignalEvent {
+  signal: Peer.SignalData;
+  id: string;
 }
 
 const MotionBox = motion(Box);
@@ -171,56 +185,117 @@ const Meeting: React.FC = () => {
   // Add loading and error states
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isStreamLoading, setIsStreamLoading] = useState(true);
+  const [isVideoLoading, setIsVideoLoading] = useState(true);
+  const [streamError, setStreamError] = useState<string | null>(null);
 
-  // Add debug logging for peer connections
-  const createPeer = (initiator: boolean, userId: string, stream: MediaStream | undefined) => {
-    if (!stream) {
-      console.error('No media stream available for peer creation');
-      toast({
-        title: 'Connection Error',
-        description: 'No media stream available. Please check your camera and microphone permissions.',
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-      throw new Error('No media stream available');
+  // Add debug logging for loading states
+  useEffect(() => {
+    console.log('Loading states:', {
+      isLoading,
+      isStreamLoading,
+      isVideoLoading,
+      error,
+      streamError
+    });
+  }, [isLoading, isStreamLoading, isVideoLoading, error, streamError]);
+
+  // Add this function to ensure stream is ready
+  const ensureStreamIsReady = async () => {
+    if (!streamRef.current) {
+      console.log('Stream not initialized, attempting to get local stream...');
+      try {
+        const stream = await getLocalStream();
+        streamRef.current = stream;
+        if (localVideoRef.current) {
+          await initializeLocalVideo(stream);
+        }
+        return stream;
+      } catch (err) {
+        console.error('Failed to get local stream:', err);
+        throw err;
+      }
     }
+    return streamRef.current;
+  };
 
+  // Update createPeer function
+  const createPeer = async (initiator: boolean, userId: string): Promise<Peer.Instance> => {
     console.log(`Creating ${initiator ? 'initiator' : 'receiver'} peer for user:`, userId);
-    const peerOptions: PeerOptions = {
-      initiator,
-      trickle: true,
-      stream,
-      config: configuration
-    };
+    
+    try {
+      const stream = await ensureStreamIsReady();
+      
+      const peerOptions: PeerOptions = {
+        initiator,
+        trickle: true,
+        stream,
+        config: configuration,
+        objectMode: true,
+        sdpTransform: (sdp: string) => {
+          console.log('SDP before transform:', sdp);
+          return sdp;
+        }
+      };
 
-    const peer = new Peer(peerOptions);
+      const peer = new Peer(peerOptions);
 
-    peer.on('signal', data => {
-      console.log('Peer signaling:', { type: data.type, userId });
-    });
-
-    peer.on('connect', () => {
-      console.log('Peer connection established:', userId);
-    });
-
-    peer.on('error', err => {
-      console.error('Peer connection error:', err);
-    });
-
-    peer.on('close', () => {
-      console.log('Peer connection closed:', userId);
-    });
-
-    peer.on('stream', stream => {
-      console.log('Received stream from peer:', userId);
-      console.log('Stream tracks:', {
-        audio: stream.getAudioTracks().length,
-        video: stream.getVideoTracks().length
+      // Add event listeners
+      peer.on('signal', (data: Peer.SignalData) => {
+        console.log('Peer signaling:', { type: typeof data === 'string' ? 'string' : data.type, userId });
+        socketRef.current?.emit('peer-signal', {
+          userToSignal: userId,
+          callerId: user?.id,
+          signal: data
+        });
       });
-    });
 
-    return peer;
+      peer.on('connect', () => {
+        console.log('Peer connection established:', userId);
+      });
+
+      peer.on('error', err => {
+        console.error('Peer connection error:', err);
+        toast({
+          title: 'Connection Error',
+          description: `Connection error with peer: ${err.message}`,
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+      });
+
+      peer.on('close', () => {
+        console.log('Peer connection closed:', userId);
+        setParticipants(prev => prev.filter(p => p.id !== userId));
+      });
+
+      peer.on('stream', remoteStream => {
+        console.log('Received stream from peer:', userId);
+        console.log('Remote stream tracks:', {
+          audio: remoteStream.getAudioTracks().length,
+          video: remoteStream.getVideoTracks().length
+        });
+
+        setParticipants(prev => {
+          const participantIndex = prev.findIndex(p => p.id === userId);
+          if (participantIndex !== -1) {
+            const updatedParticipants = [...prev];
+            updatedParticipants[participantIndex] = {
+              ...updatedParticipants[participantIndex],
+              stream: remoteStream
+            };
+            return updatedParticipants;
+          }
+          return prev;
+        });
+      });
+
+      return peer;
+    } catch (err) {
+      console.error('Error creating peer:', err);
+      throw err;
+    }
   };
 
   // Update the media stream initialization
@@ -231,16 +306,32 @@ const Meeting: React.FC = () => {
     }
 
     try {
+      setIsVideoLoading(true);
       videoElement.srcObject = stream;
-      await new Promise<void>((resolve, reject) => {
-        if (!videoElement) return reject(new Error('Video element not found'));
-        videoElement.onloadedmetadata = () => resolve();
-        videoElement.onerror = (e) => reject(e);
-      });
-      await videoElement.play();
-      console.log('Local video stream playing');
+      
+      // Add event listeners for video loading
+      videoElement.onloadedmetadata = async () => {
+        try {
+          await videoElement.play();
+          console.log('Local video stream playing successfully');
+          setIsVideoLoading(false);
+        } catch (err) {
+          console.error('Error playing video:', err);
+          setStreamError('Failed to play video stream. Please check your camera permissions.');
+          setIsVideoLoading(false);
+        }
+      };
+
+      videoElement.onerror = (e) => {
+        console.error('Video element error:', e);
+        setStreamError('Error loading video stream. Please refresh the page.');
+        setIsVideoLoading(false);
+      };
+
     } catch (err) {
       console.error('Error setting up local video:', err);
+      setStreamError('Failed to initialize video. Please check your camera permissions.');
+      setIsVideoLoading(false);
       throw err;
     }
   };
@@ -248,6 +339,9 @@ const Meeting: React.FC = () => {
   // Update the getLocalStream function
   const getLocalStream = async () => {
     try {
+      setIsStreamLoading(true);
+      setStreamError(null);
+      
       const stream = await navigator.mediaDevices.getUserMedia(getMediaConstraints);
       console.log('Got local stream:', {
         id: stream.id,
@@ -264,9 +358,21 @@ const Meeting: React.FC = () => {
           label: track.label
         }))
       });
+
+      // Verify that we have both audio and video tracks
+      if (stream.getVideoTracks().length === 0) {
+        throw new Error('No video track available. Please check your camera.');
+      }
+      if (stream.getAudioTracks().length === 0) {
+        throw new Error('No audio track available. Please check your microphone.');
+      }
+
+      setIsStreamLoading(false);
       return stream;
     } catch (err) {
       console.error('Error getting local stream:', err);
+      setStreamError(err instanceof Error ? err.message : 'Failed to access camera/microphone');
+      setIsStreamLoading(false);
       toast({
         title: 'Media Error',
         description: `Failed to access camera/microphone: ${err instanceof Error ? err.message : 'Unknown error'}. Please check your permissions.`,
@@ -278,314 +384,201 @@ const Meeting: React.FC = () => {
     }
   };
 
-  // Initialize WebRTC and Socket connection
+  // Update initializeMedia function with better error handling and timeouts
+  const initializeMedia = async () => {
+    console.log('Starting media initialization...');
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      // Add timeout for media initialization
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Media initialization timed out')), 30000);
+      });
+
+      // Race between media initialization and timeout
+      await Promise.race([
+        (async () => {
+          console.log('Requesting media permissions...');
+          let stream;
+          for (let i = 0; i < 3; i++) {
+            try {
+              stream = await getLocalStream();
+              console.log('Successfully got local stream on attempt', i + 1);
+              break;
+            } catch (err) {
+              console.error(`Attempt ${i + 1} failed:`, err);
+              if (i === 2) throw err;
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+          }
+
+          if (!stream) {
+            throw new Error('Failed to get local stream after 3 attempts');
+          }
+
+          streamRef.current = stream;
+          
+          if (localVideoRef.current) {
+            console.log('Initializing local video...');
+            await initializeLocalVideo(stream);
+            console.log('Local video initialized successfully');
+          }
+
+          // Connect to socket server
+          console.log('Connecting to socket server:', SOCKET_SERVER);
+          socketRef.current = io(SOCKET_SERVER, {
+            withCredentials: true,
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000,
+            timeout: 20000,
+            forceNew: true
+          });
+
+          // Add socket connection logging
+          socketRef.current.on('connect', () => {
+            console.log('Socket connected successfully:', socketRef.current?.id);
+            setIsLoading(false);
+          });
+
+          socketRef.current.on('connect_error', (error) => {
+            console.error('Socket connection error:', error);
+            throw new Error(`Failed to connect to meeting server: ${error.message}`);
+          });
+
+          socketRef.current.on('user-joined', async ({ userId, username, socketId }: { userId: string; username: string; socketId: string }) => {
+            console.log('User joined:', userId, username, socketId);
+            
+            try {
+              const peer = await createPeer(true, socketId);
+              peersRef.current.push({
+                peerId: userId,
+                peer
+              });
+            } catch (err) {
+              console.error('Error in user-joined handler:', err);
+            }
+          });
+
+          socketRef.current.on('room-users', (users: RoomUser[]) => {
+            console.log('Room users:', users);
+            // Filter out the current user from the participants list
+            const otherUsers = users.filter(roomUser => roomUser.userId !== user?.id);
+            setParticipants(otherUsers.map(roomUser => ({
+              id: roomUser.userId,
+              username: roomUser.username || 'Anonymous',
+              isAudioEnabled: roomUser.isAudioEnabled,
+              isVideoEnabled: roomUser.isVideoEnabled,
+              isScreenSharing: roomUser.isScreenSharing,
+              isHandRaised: roomUser.isHandRaised
+            })));
+          });
+
+          socketRef.current.on('user-disconnected', (userId: string) => {
+            console.log('User disconnected:', userId);
+            setParticipants(prev => prev.filter(p => p.id !== userId));
+          });
+
+          socketRef.current.on('user-media-toggle', ({ userId, type, enabled }) => {
+            setParticipants(prev => prev.map(p => {
+              if (p.id === userId) {
+                return {
+                  ...p,
+                  isAudioEnabled: type === 'audio' ? enabled : p.isAudioEnabled,
+                  isVideoEnabled: type === 'video' ? enabled : p.isVideoEnabled
+                };
+              }
+              return p;
+            }));
+          });
+
+          socketRef.current.on('user-screen-share', ({ userId, isSharing }) => {
+            setParticipants(prev => prev.map(p => {
+              if (p.id === userId) {
+                return { ...p, isScreenSharing: isSharing };
+              }
+              return p;
+            }));
+          });
+
+          socketRef.current.on('user-hand-raised', ({ userId, isRaised }) => {
+            setParticipants(prev => prev.map(p => {
+              if (p.id === userId) {
+                return { ...p, isHandRaised: isRaised };
+              }
+              return p;
+            }));
+          });
+
+          socketRef.current.on('peer-signal', ({ signal, callerId }) => {
+            const item = peersRef.current.find(p => p.peerId === callerId);
+            if (item) {
+              item.peer.signal(signal);
+            }
+          });
+
+          socketRef.current.on('receive-signal', async ({ signal, id }: PeerSignalEvent) => {
+            console.log('Received signal from:', id);
+            
+            try {
+              let existingPeer = peersRef.current.find(p => p.peerId === id)?.peer;
+              
+              if (!existingPeer) {
+                const newPeer = await createPeer(false, id);
+                peersRef.current.push({
+                  peerId: id,
+                  peer: newPeer
+                });
+                existingPeer = newPeer;
+              }
+
+              existingPeer.signal(signal);
+            } catch (err) {
+              console.error('Error in receive-signal handler:', err);
+            }
+          });
+
+          // Add chat message socket events
+          socketRef.current.on('chat-message', (message: ChatMessage) => {
+            console.log('Received chat message:', message);
+            setMessages(prev => [...prev, message]);
+          });
+
+        })(),
+        timeoutPromise
+      ]);
+
+    } catch (error) {
+      console.error('Error in initializeMedia:', error);
+      setError(error instanceof Error ? error.message : 'An unknown error occurred');
+      setIsLoading(false);
+      setIsStreamLoading(false);
+      setIsVideoLoading(false);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to initialize meeting',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
+
+  // Call initializeMedia in useEffect
   useEffect(() => {
-    const initializeMedia = async () => {
-      try {
-        console.log('Initializing media...');
-        setIsLoading(true);
-        setError(null);
-
-        // Request media permissions with retries
-        let stream;
-        for (let i = 0; i < 3; i++) {
-          try {
-            stream = await getLocalStream();
-            break;
-          } catch (err) {
-            console.error(`Attempt ${i + 1} failed:`, err);
-            if (i === 2) throw err;
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        }
-
-        if (!stream) {
-          throw new Error('Failed to get local stream after 3 attempts');
-        }
-
-        streamRef.current = stream;
-        
-        if (localVideoRef.current) {
-          await initializeLocalVideo(stream);
-        }
-
-        // Connect to socket server
-        console.log('Connecting to socket server:', SOCKET_SERVER);
-        socketRef.current = io(SOCKET_SERVER, {
-          withCredentials: true,
-          transports: ['websocket', 'polling'],
-          reconnection: true,
-          reconnectionAttempts: 5,
-          reconnectionDelay: 1000,
-          timeout: 20000,
-          forceNew: true
-        });
-
-        // Socket event handlers
-        socketRef.current.on('connect', () => {
-          console.log('Socket connected:', socketRef.current?.id);
-          
-          // Join room after socket connection
-          socketRef.current?.emit('join-room', { 
-            roomId: meetingId, 
-            userId: user?.id,
-            username: user?.username 
-          });
-        });
-
-        socketRef.current.on('connect_error', (error) => {
-          console.error('Socket connection error:', error);
-          setError('Failed to connect to meeting server. Please try again.');
-          toast({
-            title: 'Connection Error',
-            description: 'Failed to connect to meeting server. Please try again.',
-            status: 'error',
-            duration: 5000,
-            isClosable: true,
-          });
-        });
-
-        socketRef.current.on('user-joined', async ({ userId, username, socketId }) => {
-          console.log('User joined:', userId, username, socketId);
-          
-          if (!streamRef.current) {
-            console.error('No local stream available when user joined');
-            return;
-          }
-
-          try {
-            // Create a new peer connection for the joined user
-            console.log('Creating new peer connection for:', userId, username);
-            const peer = createPeer(true, userId, streamRef.current);
-
-            // Add peer connection event handlers
-            peer.on('signal', signal => {
-              console.log('Sending signal to peer:', userId);
-              socketRef.current?.emit('peer-signal', {
-                userToSignal: socketId,
-                callerId: user?.id,
-                signal
-              });
-            });
-
-            peer.on('stream', stream => {
-              console.log('Received stream from peer:', userId);
-              setParticipants(prev => {
-                const participantIndex = prev.findIndex(p => p.id === userId);
-                if (participantIndex !== -1) {
-                  const updatedParticipants = [...prev];
-                  updatedParticipants[participantIndex] = {
-                    ...updatedParticipants[participantIndex],
-                    stream
-                  };
-                  return updatedParticipants;
-                }
-                return [
-                  ...prev,
-                  {
-                    id: userId,
-                    username: username || 'Anonymous',
-                    isAudioEnabled: true,
-                    isVideoEnabled: true,
-                    isScreenSharing: false,
-                    isHandRaised: false,
-                    stream
-                  }
-                ];
-              });
-            });
-
-            peer.on('error', error => {
-              console.error('Peer connection error:', error);
-              toast({
-                title: 'Connection Error',
-                description: 'Failed to connect to peer. Please try rejoining the meeting.',
-                status: 'error',
-                duration: 5000,
-                isClosable: true,
-              });
-            });
-
-            peer.on('connect', () => {
-              console.log('Peer connection established with:', userId);
-            });
-
-            peer.on('close', () => {
-              console.log('Peer connection closed with:', userId);
-              setParticipants(prev => prev.filter(p => p.id !== userId));
-            });
-
-            peersRef.current.push({
-              peerId: userId,
-              peer
-            });
-          } catch (err) {
-            console.error('Error creating peer connection:', err);
-            toast({
-              title: 'Connection Error',
-              description: 'Failed to establish connection with peer. Please try rejoining the meeting.',
-              status: 'error',
-              duration: 5000,
-              isClosable: true,
-            });
-          }
-        });
-
-        socketRef.current.on('room-users', (users: RoomUser[]) => {
-          console.log('Room users:', users);
-          // Filter out the current user from the participants list
-          const otherUsers = users.filter(roomUser => roomUser.userId !== user?.id);
-          setParticipants(otherUsers.map(roomUser => ({
-            id: roomUser.userId,
-            username: roomUser.username || 'Anonymous',
-            isAudioEnabled: roomUser.isAudioEnabled,
-            isVideoEnabled: roomUser.isVideoEnabled,
-            isScreenSharing: roomUser.isScreenSharing,
-            isHandRaised: roomUser.isHandRaised
-          })));
-        });
-
-        socketRef.current.on('user-disconnected', (userId: string) => {
-          console.log('User disconnected:', userId);
-          setParticipants(prev => prev.filter(p => p.id !== userId));
-        });
-
-        socketRef.current.on('user-media-toggle', ({ userId, type, enabled }) => {
-          setParticipants(prev => prev.map(p => {
-            if (p.id === userId) {
-              return {
-                ...p,
-                isAudioEnabled: type === 'audio' ? enabled : p.isAudioEnabled,
-                isVideoEnabled: type === 'video' ? enabled : p.isVideoEnabled
-              };
-            }
-            return p;
-          }));
-        });
-
-        socketRef.current.on('user-screen-share', ({ userId, isSharing }) => {
-          setParticipants(prev => prev.map(p => {
-            if (p.id === userId) {
-              return { ...p, isScreenSharing: isSharing };
-            }
-            return p;
-          }));
-        });
-
-        socketRef.current.on('user-hand-raised', ({ userId, isRaised }) => {
-          setParticipants(prev => prev.map(p => {
-            if (p.id === userId) {
-              return { ...p, isHandRaised: isRaised };
-            }
-            return p;
-          }));
-        });
-
-        socketRef.current.on('peer-signal', ({ signal, callerId }) => {
-          const item = peersRef.current.find(p => p.peerId === callerId);
-          if (item) {
-            item.peer.signal(signal);
-          }
-        });
-
-        socketRef.current.on('receive-signal', ({ signal, id }) => {
-          console.log('Received signal from:', id);
-          
-          if (!streamRef.current) {
-            console.error('No local stream available when receiving signal');
-            return;
-          }
-
-          try {
-            const peer = createPeer(false, id, streamRef.current);
-
-            peer.on('signal', signal => {
-              console.log('Sending signal back to:', id);
-              socketRef.current?.emit('peer-signal', {
-                userToSignal: id,
-                callerId: user?.id,
-                signal
-              });
-            });
-
-            peer.on('stream', stream => {
-              console.log('Received stream from peer:', id);
-              setParticipants(prev => {
-                const participantIndex = prev.findIndex(p => p.id === id);
-                if (participantIndex !== -1) {
-                  const updatedParticipants = [...prev];
-                  updatedParticipants[participantIndex] = {
-                    ...updatedParticipants[participantIndex],
-                    stream
-                  };
-                  return updatedParticipants;
-                }
-                return prev;
-              });
-            });
-
-            peer.on('error', error => {
-              console.error('Peer connection error:', error);
-              toast({
-                title: 'Connection Error',
-                description: 'Failed to connect to peer. Please try rejoining the meeting.',
-                status: 'error',
-                duration: 5000,
-                isClosable: true,
-              });
-            });
-
-            peer.on('connect', () => {
-              console.log('Peer connection established with:', id);
-            });
-
-            peer.signal(signal);
-
-            peersRef.current.push({
-              peerId: id,
-              peer
-            });
-          } catch (err) {
-            console.error('Error handling received signal:', err);
-            toast({
-              title: 'Connection Error',
-              description: 'Failed to establish connection with peer. Please try rejoining the meeting.',
-              status: 'error',
-              duration: 5000,
-              isClosable: true,
-            });
-          }
-        });
-
-        // Add chat message socket events
-        socketRef.current.on('chat-message', (message: ChatMessage) => {
-          console.log('Received chat message:', message);
-          setMessages(prev => [...prev, message]);
-        });
-
-        setIsLoading(false);
-      } catch (error) {
-        console.error('Error in initializeMedia:', error);
-        setError(error instanceof Error ? error.message : 'An unknown error occurred');
-        setIsLoading(false);
-        toast({
-          title: 'Error',
-          description: error instanceof Error ? error.message : 'Failed to initialize meeting',
-          status: 'error',
-          duration: 5000,
-          isClosable: true,
-        });
-      }
-    };
-
+    console.log('Meeting component mounted');
     initializeMedia();
 
     return () => {
       console.log('Cleaning up media and socket connections...');
-      streamRef.current?.getTracks().forEach(track => {
-        console.log('Stopping track:', track.kind);
-        track.stop();
-      });
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          console.log('Stopping track:', track.kind);
+          track.stop();
+        });
+      }
       if (socketRef.current?.connected) {
         console.log('Disconnecting socket');
         socketRef.current.disconnect();
@@ -595,7 +588,7 @@ const Meeting: React.FC = () => {
         peer.destroy();
       });
     };
-  }, [meetingId, user?.id, user?.username, toast]);
+  }, [meetingId, user?.id, user?.username]);
 
   // Timer effect
   useEffect(() => {
@@ -795,374 +788,387 @@ const Meeting: React.FC = () => {
 
   return (
     <Flex h="100vh" bg={bgColor} direction="column">
-      {/* Loading and Error States */}
-      {isLoading && (
-        <Flex justify="center" align="center" flex={1}>
-          <VStack spacing={4}>
-            <Spinner size="xl" color="blue.500" thickness="4px" />
-            <Text fontSize="xl">Initializing meeting...</Text>
+      {/* Loading States */}
+      {(isLoading || isStreamLoading || isVideoLoading) && (
+        <Flex justify="center" align="center" flex={1} direction="column" gap={4}>
+          <Spinner size="xl" color="blue.500" thickness="4px" />
+          <VStack spacing={2}>
+            <Text fontSize="xl">
+              {isLoading ? 'Initializing meeting...' :
+               isStreamLoading ? 'Accessing camera and microphone...' :
+               isVideoLoading ? 'Setting up video stream...' : 'Loading...'}
+            </Text>
+            <Text fontSize="sm" color="gray.500">
+              This may take a few moments...
+            </Text>
           </VStack>
-        </Flex>
-      )}
-
-      {error && (
-        <Flex justify="center" align="center" flex={1}>
-          <VStack spacing={4}>
-            <Text color="red.500" fontSize="xl">{error}</Text>
-            <Button onClick={() => navigate('/')}>Return to Home</Button>
-          </VStack>
-        </Flex>
-      )}
-
-      {!isLoading && !error && (
-        <>
-          {/* Meeting Code Display */}
-          <Box
-            position="absolute"
-            top={4}
-            left={4}
-            p={2}
-            bg="blackAlpha.600"
-            color="white"
-            borderRadius="md"
-            zIndex={10}
-          >
-            <HStack spacing={2}>
-              <Text>Meeting Code: {meetingId}</Text>
-              <IconButton
-                aria-label="Copy meeting code"
-                icon={<Box as={ClipboardIcon} w={4} h={4} />}
-                size="sm"
-                variant="ghost"
-                color="white"
-                onClick={onCopy}
-              />
-            </HStack>
-            {hasCopied && (
-              <Text fontSize="xs" color="green.200">
-                Copied to clipboard!
-              </Text>
-            )}
-          </Box>
-
-          {/* Main Meeting Layout */}
-          <Flex flex={1}>
-            {/* Left Side - Video Grid */}
-            <Box flex={1} p={4} borderRight="1px" borderColor={borderColor}>
-              <Grid
-                templateColumns="repeat(auto-fit, minmax(300px, 1fr))"
-                gap={4}
-                maxH="calc(100vh - 160px)"
-                overflowY="auto"
-                p={2}
-              >
-                {/* Local Video */}
-                <MotionBox
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  position="relative"
-                  borderRadius="lg"
-                  overflow="hidden"
-                  bg="black"
+          {(error || streamError) && (
+            <Box textAlign="center" mt={4}>
+              <Text color="red.500" fontSize="md">{error || streamError}</Text>
+              <HStack spacing={4} mt={4}>
+                <Button 
+                  colorScheme="blue" 
+                  onClick={() => window.location.reload()}
                 >
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    muted
-                    playsInline
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
-                  <Box
-                    position="absolute"
-                    bottom={2}
-                    left={2}
-                    right={2}
-                    px={2}
-                    py={1}
-                    bg="blackAlpha.600"
-                    borderRadius="md"
-                    color="white"
-                  >
-                    <Flex justify="space-between" align="center">
-                      <Text fontSize="sm">{user?.username} (You)</Text>
-                      <HStack spacing={1}>
-                        {!isAudioEnabled && <MicrophoneSlashIcon width={16} />}
-                        {!isVideoEnabled && <VideoCameraSlashIcon width={16} />}
-                      </HStack>
-                    </Flex>
-                  </Box>
-                </MotionBox>
-
-                {/* Other Participants */}
-                {participants.map(participant => (
-                  <MotionBox
-                    key={participant.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    position="relative"
-                    borderRadius="lg"
-                    overflow="hidden"
-                    bg="black"
-                  >
-                    <video
-                      key={`${participant.id}-video`}
-                      autoPlay
-                      playsInline
-                      muted={false}
-                      ref={video => {
-                        if (video && participant.stream) {
-                          video.srcObject = null; // Clear any existing source
-                          video.srcObject = participant.stream;
-                          video.onloadedmetadata = async () => {
-                            try {
-                              console.log(`Remote video loaded for: ${participant.username}`);
-                              await video.play();
-                              console.log(`Remote video playing for: ${participant.username}`);
-                            } catch (err) {
-                              console.error(`Error playing remote video for ${participant.username}:`, err);
-                              toast({
-                                title: 'Video Playback Error',
-                                description: `Failed to play video for ${participant.username}. Please try refreshing.`,
-                                status: 'error',
-                                duration: 5000,
-                                isClosable: true,
-                              });
-                            }
-                          };
-                          video.onerror = (err) => {
-                            console.error(`Video error for ${participant.username}:`, err);
-                          };
-                        }
-                      }}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    />
-                    <Box
-                      position="absolute"
-                      bottom={2}
-                      left={2}
-                      right={2}
-                      px={2}
-                      py={1}
-                      bg="blackAlpha.600"
-                      borderRadius="md"
-                      color="white"
-                    >
-                      <Flex justify="space-between" align="center">
-                        <Text fontSize="sm">{participant.username}</Text>
-                        <HStack spacing={1}>
-                          {!participant.isAudioEnabled && <MicrophoneSlashIcon width={16} />}
-                          {!participant.isVideoEnabled && <VideoCameraSlashIcon width={16} />}
-                        </HStack>
-                      </Flex>
-                    </Box>
-                  </MotionBox>
-                ))}
-              </Grid>
-
-              {/* Bottom Controls */}
-              <Flex
-                position="fixed"
-                bottom={0}
-                left={0}
-                right={0}
-                h="80px"
-                bg={bgColor}
-                borderTop="1px"
-                borderColor={borderColor}
-                px={4}
-                align="center"
-                justify="center"
-                gap={4}
-              >
-                <Tooltip label={isAudioEnabled ? 'Mute' : 'Unmute'}>
-                  <IconButton
-                    aria-label="Toggle microphone"
-                    icon={isAudioEnabled ? <Box as={MicrophoneIcon} w={6} h={6} /> : <Box as={MicrophoneSlashIcon} w={6} h={6} />}
-                    colorScheme={isAudioEnabled ? 'gray' : 'red'}
-                    onClick={toggleAudio}
-                  />
-                </Tooltip>
-                <Tooltip label={isVideoEnabled ? 'Stop Video' : 'Start Video'}>
-                  <IconButton
-                    aria-label="Toggle camera"
-                    icon={isVideoEnabled ? <Box as={VideoCameraIcon} w={6} h={6} /> : <Box as={VideoCameraSlashIcon} w={6} h={6} />}
-                    colorScheme={isVideoEnabled ? 'gray' : 'red'}
-                    onClick={toggleVideo}
-                  />
-                </Tooltip>
-                <Tooltip label={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}>
-                  <IconButton
-                    aria-label="Share screen"
-                    icon={<Box as={ShareIcon} w={6} h={6} />}
-                    colorScheme={isScreenSharing ? 'brand' : 'gray'}
-                    onClick={toggleScreenShare}
-                  />
-                </Tooltip>
-                <Tooltip label={isRecording ? 'Stop Recording' : 'Start Recording'}>
-                  <IconButton
-                    aria-label="Record"
-                    icon={<Box as="span" w={3} h={3} borderRadius="full" bg={isRecording ? 'red.500' : 'gray.500'} />}
-                    colorScheme={isRecording ? 'red' : 'gray'}
-                    onClick={toggleRecording}
-                  />
-                </Tooltip>
-                <Tooltip label={isHandRaised ? 'Lower Hand' : 'Raise Hand'}>
-                  <IconButton
-                    aria-label="Raise hand"
-                    icon={<Box as={HandRaisedIcon} w={6} h={6} />}
-                    colorScheme={isHandRaised ? 'yellow' : 'gray'}
-                    onClick={toggleHandRaise}
-                  />
-                </Tooltip>
-                <Tooltip label="Leave Meeting">
-                  <IconButton
-                    aria-label="Leave meeting"
-                    icon={<Box as={PhoneIcon} w={6} h={6} transform="rotate(135deg)" />}
-                    colorScheme="red"
-                    onClick={handleLeaveMeeting}
-                  />
-                </Tooltip>
-
-                {/* Meeting Info */}
-                <Box position="absolute" left={4}>
-                  <Text fontSize="sm" color="gray.500">
-                    {formatTime(elapsedTime)}
-                  </Text>
-                </Box>
-              </Flex>
+                  Retry
+                </Button>
+                <Button 
+                  variant="ghost" 
+                  onClick={() => navigate('/')}
+                >
+                  Return Home
+                </Button>
+              </HStack>
             </Box>
+          )}
+        </Flex>
+      )}
 
-            {/* Right Side - Tabs */}
-            <Box w="350px" h="100%" bg={bgColor}>
-              <Tabs isFitted variant="enclosed">
-                <TabList>
-                  <Tab><Box as={UsersIcon} w={5} h={5} /></Tab>
-                  <Tab><Box as={ChatIcon} w={5} h={5} /></Tab>
-                  <Tab><Box as={PencilIcon} w={5} h={5} /></Tab>
-                </TabList>
+      {/* Meeting Code Display */}
+      <Box
+        position="absolute"
+        top={4}
+        left={4}
+        p={2}
+        bg="blackAlpha.600"
+        color="white"
+        borderRadius="md"
+        zIndex={10}
+      >
+        <HStack spacing={2}>
+          <Text>Meeting Code: {meetingId}</Text>
+          <IconButton
+            aria-label="Copy meeting code"
+            icon={<Box as={ClipboardIcon} w={4} h={4} />}
+            size="sm"
+            variant="ghost"
+            color="white"
+            onClick={onCopy}
+          />
+        </HStack>
+        {hasCopied && (
+          <Text fontSize="xs" color="green.200">
+            Copied to clipboard!
+          </Text>
+        )}
+      </Box>
 
-                <TabPanels h="calc(100vh - 40px)" overflowY="auto">
-                  {/* Participants Panel */}
-                  <TabPanel>
-                    <VStack spacing={4} align="stretch">
-                      <Text fontWeight="bold">Participants ({participants.length + 1})</Text>
-                      <List spacing={2}>
-                        {/* Local User */}
-                        <ListItem p={2} bg="gray.50" borderRadius="md">
-                          <Flex align="center" gap={3}>
-                            <Avatar size="sm" name={user?.username} />
-                            <Box flex={1}>
-                              <Text fontWeight="medium">{user?.username} (You)</Text>
-                              <HStack spacing={1}>
-                                {!isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
-                                {!isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
-                                {isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
-                                {isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
-                              </HStack>
-                            </Box>
-                          </Flex>
-                        </ListItem>
+      {/* Main Meeting Layout */}
+      <Flex flex={1}>
+        {/* Left Side - Video Grid */}
+        <Box flex={1} p={4} borderRight="1px" borderColor={borderColor}>
+          <Grid
+            templateColumns="repeat(auto-fit, minmax(300px, 1fr))"
+            gap={4}
+            maxH="calc(100vh - 160px)"
+            overflowY="auto"
+            p={2}
+          >
+            {/* Local Video */}
+            <MotionBox
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              position="relative"
+              borderRadius="lg"
+              overflow="hidden"
+              bg="black"
+            >
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+              <Box
+                position="absolute"
+                bottom={2}
+                left={2}
+                right={2}
+                px={2}
+                py={1}
+                bg="blackAlpha.600"
+                borderRadius="md"
+                color="white"
+              >
+                <Flex justify="space-between" align="center">
+                  <Text fontSize="sm">{user?.username} (You)</Text>
+                  <HStack spacing={1}>
+                    {!isAudioEnabled && <MicrophoneSlashIcon width={16} />}
+                    {!isVideoEnabled && <VideoCameraSlashIcon width={16} />}
+                  </HStack>
+                </Flex>
+              </Box>
+            </MotionBox>
 
-                        {/* Other Participants */}
-                        {participants.map(participant => (
-                          <ListItem key={participant.id} p={2} bg="gray.50" borderRadius="md">
-                            <Flex align="center" gap={3}>
-                              <Avatar size="sm" name={participant.username} />
-                              <Box flex={1}>
-                                <Text fontWeight="medium">{participant.username}</Text>
-                                <HStack spacing={1}>
-                                  {!participant.isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
-                                  {!participant.isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
-                                  {participant.isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
-                                  {participant.isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
-                                </HStack>
-                              </Box>
-                            </Flex>
-                          </ListItem>
-                        ))}
-                      </List>
-                    </VStack>
-                  </TabPanel>
+            {/* Other Participants */}
+            {participants.map(participant => (
+              <MotionBox
+                key={participant.id}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                position="relative"
+                borderRadius="lg"
+                overflow="hidden"
+                bg="black"
+              >
+                <video
+                  key={`${participant.id}-video`}
+                  autoPlay
+                  playsInline
+                  muted={false}
+                  ref={video => {
+                    if (video && participant.stream) {
+                      video.srcObject = null; // Clear any existing source
+                      video.srcObject = participant.stream;
+                      video.onloadedmetadata = async () => {
+                        try {
+                          console.log(`Remote video loaded for: ${participant.username}`);
+                          await video.play();
+                          console.log(`Remote video playing for: ${participant.username}`);
+                        } catch (err) {
+                          console.error(`Error playing remote video for ${participant.username}:`, err);
+                          toast({
+                            title: 'Video Playback Error',
+                            description: `Failed to play video for ${participant.username}. Please try refreshing.`,
+                            status: 'error',
+                            duration: 5000,
+                            isClosable: true,
+                          });
+                        }
+                      };
+                      video.onerror = (err) => {
+                        console.error(`Video error for ${participant.username}:`, err);
+                      };
+                    }
+                  }}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+                <Box
+                  position="absolute"
+                  bottom={2}
+                  left={2}
+                  right={2}
+                  px={2}
+                  py={1}
+                  bg="blackAlpha.600"
+                  borderRadius="md"
+                  color="white"
+                >
+                  <Flex justify="space-between" align="center">
+                    <Text fontSize="sm">{participant.username}</Text>
+                    <HStack spacing={1}>
+                      {!participant.isAudioEnabled && <MicrophoneSlashIcon width={16} />}
+                      {!participant.isVideoEnabled && <VideoCameraSlashIcon width={16} />}
+                    </HStack>
+                  </Flex>
+                </Box>
+              </MotionBox>
+            ))}
+          </Grid>
 
-                  {/* Chat Panel */}
-                  <TabPanel h="100%" display="flex" flexDirection="column">
-                    <VStack flex={1} spacing={4} align="stretch">
-                      <Box flex={1} overflowY="auto">
-                        {messages.map(message => (
-                          <Box
-                            key={message.id}
-                            mb={4}
-                            p={2}
-                            bg={message.senderId === user?.id ? 'brand.100' : 'gray.100'}
-                            borderRadius="md"
-                          >
-                            <Text fontWeight="bold" fontSize="sm">{message.senderName}</Text>
-                            <Text>{message.content}</Text>
-                            <Text fontSize="xs" color="gray.500">
-                              {message.timestamp.toLocaleTimeString()}
-                            </Text>
-                          </Box>
-                        ))}
-                      </Box>
-                      <InputGroup size="md">
-                        <Input
-                          pr="4.5rem"
-                          placeholder="Type a message..."
-                          value={newMessage}
-                          onChange={(e) => setNewMessage(e.target.value)}
-                          onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                        />
-                        <InputRightElement width="4.5rem">
-                          <Button h="1.75rem" size="sm" onClick={handleSendMessage}>
-                            Send
-                          </Button>
-                        </InputRightElement>
-                      </InputGroup>
-                    </VStack>
-                  </TabPanel>
+          {/* Bottom Controls */}
+          <Flex
+            position="fixed"
+            bottom={0}
+            left={0}
+            right={0}
+            h="80px"
+            bg={bgColor}
+            borderTop="1px"
+            borderColor={borderColor}
+            px={4}
+            align="center"
+            justify="center"
+            gap={4}
+          >
+            <Tooltip label={isAudioEnabled ? 'Mute' : 'Unmute'}>
+              <IconButton
+                aria-label="Toggle microphone"
+                icon={isAudioEnabled ? <Box as={MicrophoneIcon} w={6} h={6} /> : <Box as={MicrophoneSlashIcon} w={6} h={6} />}
+                colorScheme={isAudioEnabled ? 'gray' : 'red'}
+                onClick={toggleAudio}
+              />
+            </Tooltip>
+            <Tooltip label={isVideoEnabled ? 'Stop Video' : 'Start Video'}>
+              <IconButton
+                aria-label="Toggle camera"
+                icon={isVideoEnabled ? <Box as={VideoCameraIcon} w={6} h={6} /> : <Box as={VideoCameraSlashIcon} w={6} h={6} />}
+                colorScheme={isVideoEnabled ? 'gray' : 'red'}
+                onClick={toggleVideo}
+              />
+            </Tooltip>
+            <Tooltip label={isScreenSharing ? 'Stop Sharing' : 'Share Screen'}>
+              <IconButton
+                aria-label="Share screen"
+                icon={<Box as={ShareIcon} w={6} h={6} />}
+                colorScheme={isScreenSharing ? 'brand' : 'gray'}
+                onClick={toggleScreenShare}
+              />
+            </Tooltip>
+            <Tooltip label={isRecording ? 'Stop Recording' : 'Start Recording'}>
+              <IconButton
+                aria-label="Record"
+                icon={<Box as="span" w={3} h={3} borderRadius="full" bg={isRecording ? 'red.500' : 'gray.500'} />}
+                colorScheme={isRecording ? 'red' : 'gray'}
+                onClick={toggleRecording}
+              />
+            </Tooltip>
+            <Tooltip label={isHandRaised ? 'Lower Hand' : 'Raise Hand'}>
+              <IconButton
+                aria-label="Raise hand"
+                icon={<Box as={HandRaisedIcon} w={6} h={6} />}
+                colorScheme={isHandRaised ? 'yellow' : 'gray'}
+                onClick={toggleHandRaise}
+              />
+            </Tooltip>
+            <Tooltip label="Leave Meeting">
+              <IconButton
+                aria-label="Leave meeting"
+                icon={<Box as={PhoneIcon} w={6} h={6} transform="rotate(135deg)" />}
+                colorScheme="red"
+                onClick={handleLeaveMeeting}
+              />
+            </Tooltip>
 
-                  {/* Tools Panel */}
-                  <TabPanel>
-                    <VStack spacing={4} align="stretch">
-                      <Text fontWeight="bold">Tools</Text>
-                      <Box
-                        border="2px"
-                        borderColor={borderColor}
-                        borderRadius="md"
-                        h="400px"
-                        position="relative"
-                      >
-                        <canvas
-                          ref={whiteboardRef}
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            cursor: 'crosshair',
-                          }}
-                          onMouseDown={startDrawing}
-                          onMouseMove={draw}
-                          onMouseUp={stopDrawing}
-                          onMouseLeave={stopDrawing}
-                        />
-                      </Box>
-                      <Button
-                        leftIcon={<Box as={ShareIcon} w={5} h={5} />}
-                        width="100%"
-                        onClick={toggleScreenShare}
-                        colorScheme={isScreenSharing ? 'red' : 'gray'}
-                      >
-                        {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
-                      </Button>
-                      <Divider />
-                      <Text fontSize="sm" color="gray.500">More tools coming soon...</Text>
-                    </VStack>
-                  </TabPanel>
-                </TabPanels>
-              </Tabs>
+            {/* Meeting Info */}
+            <Box position="absolute" left={4}>
+              <Text fontSize="sm" color="gray.500">
+                {formatTime(elapsedTime)}
+              </Text>
             </Box>
           </Flex>
-        </>
-      )}
+        </Box>
+
+        {/* Right Side - Tabs */}
+        <Box w="350px" h="100%" bg={bgColor}>
+          <Tabs isFitted variant="enclosed">
+            <TabList>
+              <Tab><Box as={UsersIcon} w={5} h={5} /></Tab>
+              <Tab><Box as={ChatIcon} w={5} h={5} /></Tab>
+              <Tab><Box as={PencilIcon} w={5} h={5} /></Tab>
+            </TabList>
+
+            <TabPanels h="calc(100vh - 40px)" overflowY="auto">
+              {/* Participants Panel */}
+              <TabPanel>
+                <VStack spacing={4} align="stretch">
+                  <Text fontWeight="bold">Participants ({participants.length + 1})</Text>
+                  <List spacing={2}>
+                    {/* Local User */}
+                    <ListItem p={2} bg="gray.50" borderRadius="md">
+                      <Flex align="center" gap={3}>
+                        <Avatar size="sm" name={user?.username} />
+                        <Box flex={1}>
+                          <Text fontWeight="medium">{user?.username} (You)</Text>
+                          <HStack spacing={1}>
+                            {!isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
+                            {!isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
+                            {isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
+                            {isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
+                          </HStack>
+                        </Box>
+                      </Flex>
+                    </ListItem>
+
+                    {/* Other Participants */}
+                    {participants.map(participant => (
+                      <ListItem key={participant.id} p={2} bg="gray.50" borderRadius="md">
+                        <Flex align="center" gap={3}>
+                          <Avatar size="sm" name={participant.username} />
+                          <Box flex={1}>
+                            <Text fontWeight="medium">{participant.username}</Text>
+                            <HStack spacing={1}>
+                              {!participant.isAudioEnabled && <Badge colorScheme="red">Muted</Badge>}
+                              {!participant.isVideoEnabled && <Badge colorScheme="red">Video Off</Badge>}
+                              {participant.isScreenSharing && <Badge colorScheme="green">Sharing</Badge>}
+                              {participant.isHandRaised && <Badge colorScheme="yellow">Hand Raised</Badge>}
+                            </HStack>
+                          </Box>
+                        </Flex>
+                      </ListItem>
+                    ))}
+                  </List>
+                </VStack>
+              </TabPanel>
+
+              {/* Chat Panel */}
+              <TabPanel h="100%" display="flex" flexDirection="column">
+                <VStack flex={1} spacing={4} align="stretch">
+                  <Box flex={1} overflowY="auto">
+                    {messages.map(message => (
+                      <Box
+                        key={message.id}
+                        mb={4}
+                        p={2}
+                        bg={message.senderId === user?.id ? 'brand.100' : 'gray.100'}
+                        borderRadius="md"
+                      >
+                        <Text fontWeight="bold" fontSize="sm">{message.senderName}</Text>
+                        <Text>{message.content}</Text>
+                        <Text fontSize="xs" color="gray.500">
+                          {message.timestamp.toLocaleTimeString()}
+                        </Text>
+                      </Box>
+                    ))}
+                  </Box>
+                  <InputGroup size="md">
+                    <Input
+                      pr="4.5rem"
+                      placeholder="Type a message..."
+                      value={newMessage}
+                      onChange={(e) => setNewMessage(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                    />
+                    <InputRightElement width="4.5rem">
+                      <Button h="1.75rem" size="sm" onClick={handleSendMessage}>
+                        Send
+                      </Button>
+                    </InputRightElement>
+                  </InputGroup>
+                </VStack>
+              </TabPanel>
+
+              {/* Tools Panel */}
+              <TabPanel>
+                <VStack spacing={4} align="stretch">
+                  <Text fontWeight="bold">Tools</Text>
+                  <Box
+                    border="2px"
+                    borderColor={borderColor}
+                    borderRadius="md"
+                    h="400px"
+                    position="relative"
+                  >
+                    <canvas
+                      ref={whiteboardRef}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        cursor: 'crosshair',
+                      }}
+                      onMouseDown={startDrawing}
+                      onMouseMove={draw}
+                      onMouseUp={stopDrawing}
+                      onMouseLeave={stopDrawing}
+                    />
+                  </Box>
+                  <Button
+                    leftIcon={<Box as={ShareIcon} w={5} h={5} />}
+                    width="100%"
+                    onClick={toggleScreenShare}
+                    colorScheme={isScreenSharing ? 'red' : 'gray'}
+                  >
+                    {isScreenSharing ? 'Stop Sharing' : 'Share Screen'}
+                  </Button>
+                  <Divider />
+                  <Text fontSize="sm" color="gray.500">More tools coming soon...</Text>
+                </VStack>
+              </TabPanel>
+            </TabPanels>
+          </Tabs>
+        </Box>
+      </Flex>
     </Flex>
   );
 };
