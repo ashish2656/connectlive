@@ -113,6 +113,20 @@ const configuration = {
   iceCandidatePoolSize: 10,
 };
 
+// Update the media constraints
+const getMediaConstraints = {
+  video: {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 30 }
+  },
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  }
+};
+
 const Meeting: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>();
   const { user } = useAuth();
@@ -150,6 +164,98 @@ const Meeting: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Add debug logging for peer connections
+  const createPeer = (initiator: boolean, userId: string, stream: MediaStream) => {
+    console.log(`Creating ${initiator ? 'initiator' : 'receiver'} peer for user:`, userId);
+    const peer = new Peer({
+      initiator,
+      trickle: true,
+      stream,
+      config: configuration
+    });
+
+    peer.on('signal', data => {
+      console.log('Peer signaling:', { type: data.type, userId });
+    });
+
+    peer.on('connect', () => {
+      console.log('Peer connection established:', userId);
+    });
+
+    peer.on('error', err => {
+      console.error('Peer connection error:', err);
+    });
+
+    peer.on('close', () => {
+      console.log('Peer connection closed:', userId);
+    });
+
+    peer.on('stream', stream => {
+      console.log('Received stream from peer:', userId);
+      console.log('Stream tracks:', {
+        audio: stream.getAudioTracks().length,
+        video: stream.getVideoTracks().length
+      });
+    });
+
+    return peer;
+  };
+
+  // Update the media stream initialization
+  const initializeLocalVideo = async (stream: MediaStream) => {
+    const videoElement = localVideoRef.current;
+    if (!videoElement) {
+      throw new Error('Video element not found');
+    }
+
+    try {
+      videoElement.srcObject = stream;
+      await new Promise<void>((resolve, reject) => {
+        if (!videoElement) return reject(new Error('Video element not found'));
+        videoElement.onloadedmetadata = () => resolve();
+        videoElement.onerror = (e) => reject(e);
+      });
+      await videoElement.play();
+      console.log('Local video stream playing');
+    } catch (err) {
+      console.error('Error setting up local video:', err);
+      throw err;
+    }
+  };
+
+  // Update the getLocalStream function
+  const getLocalStream = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(getMediaConstraints);
+      console.log('Got local stream:', {
+        id: stream.id,
+        audioTracks: stream.getAudioTracks().map(track => ({
+          enabled: track.enabled,
+          muted: track.muted,
+          id: track.id,
+          label: track.label
+        })),
+        videoTracks: stream.getVideoTracks().map(track => ({
+          enabled: track.enabled,
+          muted: track.muted,
+          id: track.id,
+          label: track.label
+        }))
+      });
+      return stream;
+    } catch (err) {
+      console.error('Error getting local stream:', err);
+      toast({
+        title: 'Media Error',
+        description: `Failed to access camera/microphone: ${err instanceof Error ? err.message : 'Unknown error'}. Please check your permissions.`,
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+      throw err;
+    }
+  };
+
   // Initialize WebRTC and Socket connection
   useEffect(() => {
     const initializeMedia = async () => {
@@ -158,36 +264,27 @@ const Meeting: React.FC = () => {
         setIsLoading(true);
         setError(null);
 
-        // Request media permissions
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        }).catch((err) => {
-          console.error('Error getting media stream:', err);
-          toast({
-            title: 'Media Error',
-            description: `Failed to access camera/microphone: ${err.message}`,
-            status: 'error',
-            duration: 5000,
-            isClosable: true,
-          });
-          throw err;
-        });
+        // Request media permissions with retries
+        let stream;
+        for (let i = 0; i < 3; i++) {
+          try {
+            stream = await getLocalStream();
+            break;
+          } catch (err) {
+            console.error(`Attempt ${i + 1} failed:`, err);
+            if (i === 2) throw err;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
 
-        console.log('Media stream obtained:', stream.id);
-        console.log('Audio tracks:', stream.getAudioTracks().length);
-        console.log('Video tracks:', stream.getVideoTracks().length);
-        
+        if (!stream) {
+          throw new Error('Failed to get local stream after 3 attempts');
+        }
+
         streamRef.current = stream;
         
         if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          localVideoRef.current.onloadedmetadata = () => {
-            console.log('Local video stream loaded');
-            localVideoRef.current?.play().catch(err => {
-              console.error('Error playing local video:', err);
-            });
-          };
+          await initializeLocalVideo(stream);
         }
 
         // Connect to socket server
@@ -231,12 +328,7 @@ const Meeting: React.FC = () => {
           
           // Create a new peer connection for the joined user
           console.log('Creating new peer connection for:', userId, username);
-          const peer = new Peer({
-            initiator: true,
-            trickle: true,
-            stream: streamRef.current,
-            config: configuration
-          });
+          const peer = createPeer(true, userId, streamRef.current);
 
           // Add peer connection event handlers
           peer.on('signal', signal => {
@@ -360,12 +452,7 @@ const Meeting: React.FC = () => {
 
         socketRef.current.on('receive-signal', ({ signal, id }) => {
           console.log('Received signal from:', id);
-          const peer = new Peer({
-            initiator: false,
-            trickle: true,
-            stream: streamRef.current,
-            config: configuration
-          });
+          const peer = createPeer(false, id, streamRef.current);
 
           peer.on('signal', signal => {
             console.log('Sending signal back to:', id);
@@ -763,15 +850,20 @@ const Meeting: React.FC = () => {
                     bg="black"
                   >
                     <video
+                      key={`${participant.id}-video`}
                       autoPlay
                       playsInline
                       muted={false}
                       ref={video => {
                         if (video && participant.stream) {
+                          video.srcObject = null; // Clear any existing source
                           video.srcObject = participant.stream;
-                          video.onloadedmetadata = () => {
-                            console.log(`Remote video loaded for: ${participant.username}`);
-                            video.play().catch(err => {
+                          video.onloadedmetadata = async () => {
+                            try {
+                              console.log(`Remote video loaded for: ${participant.username}`);
+                              await video.play();
+                              console.log(`Remote video playing for: ${participant.username}`);
+                            } catch (err) {
                               console.error(`Error playing remote video for ${participant.username}:`, err);
                               toast({
                                 title: 'Video Playback Error',
@@ -780,7 +872,10 @@ const Meeting: React.FC = () => {
                                 duration: 5000,
                                 isClosable: true,
                               });
-                            });
+                            }
+                          };
+                          video.onerror = (err) => {
+                            console.error(`Video error for ${participant.username}:`, err);
                           };
                         }
                       }}
