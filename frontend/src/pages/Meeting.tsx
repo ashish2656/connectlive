@@ -88,6 +88,14 @@ interface RoomUser {
   isHandRaised: boolean;
 }
 
+// Add proper type for Peer options
+interface PeerOptions {
+  initiator: boolean;
+  trickle: boolean;
+  stream?: MediaStream;
+  config: RTCConfiguration;
+}
+
 const MotionBox = motion(Box);
 
 // Update the constant to use Vite's environment variables
@@ -165,14 +173,28 @@ const Meeting: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   // Add debug logging for peer connections
-  const createPeer = (initiator: boolean, userId: string, stream: MediaStream) => {
+  const createPeer = (initiator: boolean, userId: string, stream: MediaStream | undefined) => {
+    if (!stream) {
+      console.error('No media stream available for peer creation');
+      toast({
+        title: 'Connection Error',
+        description: 'No media stream available. Please check your camera and microphone permissions.',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+      throw new Error('No media stream available');
+    }
+
     console.log(`Creating ${initiator ? 'initiator' : 'receiver'} peer for user:`, userId);
-    const peer = new Peer({
+    const peerOptions: PeerOptions = {
       initiator,
       trickle: true,
       stream,
       config: configuration
-    });
+    };
+
+    const peer = new Peer(peerOptions);
 
     peer.on('signal', data => {
       console.log('Peer signaling:', { type: data.type, userId });
@@ -326,71 +348,87 @@ const Meeting: React.FC = () => {
         socketRef.current.on('user-joined', async ({ userId, username, socketId }) => {
           console.log('User joined:', userId, username, socketId);
           
-          // Create a new peer connection for the joined user
-          console.log('Creating new peer connection for:', userId, username);
-          const peer = createPeer(true, userId, streamRef.current);
+          if (!streamRef.current) {
+            console.error('No local stream available when user joined');
+            return;
+          }
 
-          // Add peer connection event handlers
-          peer.on('signal', signal => {
-            console.log('Sending signal to peer:', userId);
-            socketRef.current?.emit('peer-signal', {
-              userToSignal: socketId,
-              callerId: user?.id,
-              signal
+          try {
+            // Create a new peer connection for the joined user
+            console.log('Creating new peer connection for:', userId, username);
+            const peer = createPeer(true, userId, streamRef.current);
+
+            // Add peer connection event handlers
+            peer.on('signal', signal => {
+              console.log('Sending signal to peer:', userId);
+              socketRef.current?.emit('peer-signal', {
+                userToSignal: socketId,
+                callerId: user?.id,
+                signal
+              });
             });
-          });
 
-          peer.on('stream', stream => {
-            console.log('Received stream from peer:', userId);
-            setParticipants(prev => {
-              const participantIndex = prev.findIndex(p => p.id === userId);
-              if (participantIndex !== -1) {
-                const updatedParticipants = [...prev];
-                updatedParticipants[participantIndex] = {
-                  ...updatedParticipants[participantIndex],
-                  stream
-                };
-                return updatedParticipants;
-              }
-              return [
-                ...prev,
-                {
-                  id: userId,
-                  username: username || 'Anonymous',
-                  isAudioEnabled: true,
-                  isVideoEnabled: true,
-                  isScreenSharing: false,
-                  isHandRaised: false,
-                  stream
+            peer.on('stream', stream => {
+              console.log('Received stream from peer:', userId);
+              setParticipants(prev => {
+                const participantIndex = prev.findIndex(p => p.id === userId);
+                if (participantIndex !== -1) {
+                  const updatedParticipants = [...prev];
+                  updatedParticipants[participantIndex] = {
+                    ...updatedParticipants[participantIndex],
+                    stream
+                  };
+                  return updatedParticipants;
                 }
-              ];
+                return [
+                  ...prev,
+                  {
+                    id: userId,
+                    username: username || 'Anonymous',
+                    isAudioEnabled: true,
+                    isVideoEnabled: true,
+                    isScreenSharing: false,
+                    isHandRaised: false,
+                    stream
+                  }
+                ];
+              });
             });
-          });
 
-          peer.on('error', error => {
-            console.error('Peer connection error:', error);
+            peer.on('error', error => {
+              console.error('Peer connection error:', error);
+              toast({
+                title: 'Connection Error',
+                description: 'Failed to connect to peer. Please try rejoining the meeting.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+              });
+            });
+
+            peer.on('connect', () => {
+              console.log('Peer connection established with:', userId);
+            });
+
+            peer.on('close', () => {
+              console.log('Peer connection closed with:', userId);
+              setParticipants(prev => prev.filter(p => p.id !== userId));
+            });
+
+            peersRef.current.push({
+              peerId: userId,
+              peer
+            });
+          } catch (err) {
+            console.error('Error creating peer connection:', err);
             toast({
               title: 'Connection Error',
-              description: 'Failed to connect to peer. Please try rejoining the meeting.',
+              description: 'Failed to establish connection with peer. Please try rejoining the meeting.',
               status: 'error',
               duration: 5000,
               isClosable: true,
             });
-          });
-
-          peer.on('connect', () => {
-            console.log('Peer connection established with:', userId);
-          });
-
-          peer.on('close', () => {
-            console.log('Peer connection closed with:', userId);
-            setParticipants(prev => prev.filter(p => p.id !== userId));
-          });
-
-          peersRef.current.push({
-            peerId: userId,
-            peer
-          });
+          }
         });
 
         socketRef.current.on('room-users', (users: RoomUser[]) => {
@@ -452,54 +490,71 @@ const Meeting: React.FC = () => {
 
         socketRef.current.on('receive-signal', ({ signal, id }) => {
           console.log('Received signal from:', id);
-          const peer = createPeer(false, id, streamRef.current);
+          
+          if (!streamRef.current) {
+            console.error('No local stream available when receiving signal');
+            return;
+          }
 
-          peer.on('signal', signal => {
-            console.log('Sending signal back to:', id);
-            socketRef.current?.emit('peer-signal', {
-              userToSignal: id,
-              callerId: user?.id,
-              signal
+          try {
+            const peer = createPeer(false, id, streamRef.current);
+
+            peer.on('signal', signal => {
+              console.log('Sending signal back to:', id);
+              socketRef.current?.emit('peer-signal', {
+                userToSignal: id,
+                callerId: user?.id,
+                signal
+              });
             });
-          });
 
-          peer.on('stream', stream => {
-            console.log('Received stream from peer:', id);
-            setParticipants(prev => {
-              const participantIndex = prev.findIndex(p => p.id === id);
-              if (participantIndex !== -1) {
-                const updatedParticipants = [...prev];
-                updatedParticipants[participantIndex] = {
-                  ...updatedParticipants[participantIndex],
-                  stream
-                };
-                return updatedParticipants;
-              }
-              return prev;
+            peer.on('stream', stream => {
+              console.log('Received stream from peer:', id);
+              setParticipants(prev => {
+                const participantIndex = prev.findIndex(p => p.id === id);
+                if (participantIndex !== -1) {
+                  const updatedParticipants = [...prev];
+                  updatedParticipants[participantIndex] = {
+                    ...updatedParticipants[participantIndex],
+                    stream
+                  };
+                  return updatedParticipants;
+                }
+                return prev;
+              });
             });
-          });
 
-          peer.on('error', error => {
-            console.error('Peer connection error:', error);
+            peer.on('error', error => {
+              console.error('Peer connection error:', error);
+              toast({
+                title: 'Connection Error',
+                description: 'Failed to connect to peer. Please try rejoining the meeting.',
+                status: 'error',
+                duration: 5000,
+                isClosable: true,
+              });
+            });
+
+            peer.on('connect', () => {
+              console.log('Peer connection established with:', id);
+            });
+
+            peer.signal(signal);
+
+            peersRef.current.push({
+              peerId: id,
+              peer
+            });
+          } catch (err) {
+            console.error('Error handling received signal:', err);
             toast({
               title: 'Connection Error',
-              description: 'Failed to connect to peer. Please try rejoining the meeting.',
+              description: 'Failed to establish connection with peer. Please try rejoining the meeting.',
               status: 'error',
               duration: 5000,
               isClosable: true,
             });
-          });
-
-          peer.on('connect', () => {
-            console.log('Peer connection established with:', id);
-          });
-
-          peer.signal(signal);
-
-          peersRef.current.push({
-            peerId: id,
-            peer
-          });
+          }
         });
 
         // Add chat message socket events
