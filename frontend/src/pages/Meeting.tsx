@@ -68,6 +68,13 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+interface Participant {
+  userId: string;
+  username: string;
+  joinedAt: Date;
+  isActive: boolean;
+}
+
 const Meeting: React.FC = () => {
   const { meetingId } = useParams<{ meetingId: string }>();
   const { user } = useAuth();
@@ -91,6 +98,7 @@ const Meeting: React.FC = () => {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [participants, setParticipants] = useState<Participant[]>([]);
 
   // Theme
   const bgColor = useColorModeValue('white', 'gray.800');
@@ -266,6 +274,58 @@ const Meeting: React.FC = () => {
     const peer = useHMSStore(selectPeerByID(peerId));
     return peer?.auxiliaryTracks?.some(track => track.enabled && track.source === 'screen') ?? false;
   };
+
+  // Join meeting and fetch participants
+  useEffect(() => {
+    const joinAndFetchParticipants = async () => {
+      try {
+        // Join meeting
+        await axios.post(`${API_ENDPOINTS.meetings.join.replace(':meetingId', meetingId!)}`);
+        
+        // Fetch initial participants
+        const response = await axios.get(`${API_ENDPOINTS.meetings.participants.replace(':meetingId', meetingId!)}`);
+        setParticipants(response.data.participants);
+      } catch (err) {
+        console.error('Error joining meeting:', err);
+        toast({
+          title: 'Error',
+          description: 'Failed to join meeting. Please try again.',
+          status: 'error',
+          duration: 5000,
+        });
+      }
+    };
+
+    if (meetingId && user) {
+      joinAndFetchParticipants();
+    }
+
+    // Leave meeting on unmount
+    return () => {
+      if (meetingId) {
+        axios.post(`${API_ENDPOINTS.meetings.leave.replace(':meetingId', meetingId)}`)
+          .catch(err => console.error('Error leaving meeting:', err));
+      }
+    };
+  }, [meetingId, user]);
+
+  // Periodically fetch participants
+  useEffect(() => {
+    if (!meetingId) return;
+
+    const fetchParticipants = async () => {
+      try {
+        const response = await axios.get(`${API_ENDPOINTS.meetings.participants.replace(':meetingId', meetingId)}`);
+        setParticipants(response.data.participants);
+      } catch (err) {
+        console.error('Error fetching participants:', err);
+      }
+    };
+
+    const interval = setInterval(fetchParticipants, 10000); // Fetch every 10 seconds
+
+    return () => clearInterval(interval);
+  }, [meetingId]);
 
   // Loading state
   if (isLoading) {
@@ -446,24 +506,19 @@ const Meeting: React.FC = () => {
               {/* Participants Panel */}
               <TabPanel>
                 <VStack spacing={4} align="stretch">
-                  <Text fontWeight="bold">Participants ({peers.length})</Text>
+                  <Text fontWeight="bold">Participants ({participants.length})</Text>
                   <List spacing={2}>
-                    {peers.map(peer => (
-                      <ListItem key={peer.id} p={2} bg="gray.50" borderRadius="md">
+                    {participants.map(participant => (
+                      <ListItem key={participant.userId} p={2} bg="gray.50" borderRadius="md">
                         <Flex align="center" gap={3}>
-                          <Avatar size="sm" name={peer.name} />
+                          <Avatar size="sm" name={participant.username} />
                           <Box flex={1}>
-                            <Text fontWeight="medium">{peer.name} {peer.isLocal ? '(You)' : ''}</Text>
-                            <HStack spacing={1}>
-                              {!getPeerAudioEnabled(peer.id) && <Badge colorScheme="red">Muted</Badge>}
-                              {!getPeerVideoEnabled(peer.id) && <Badge colorScheme="red">Video Off</Badge>}
-                              {getPeerScreenShareEnabled(peer.id) && (
-                                <Badge colorScheme="green">Sharing</Badge>
-                              )}
-                              {peer.metadata && JSON.parse(peer.metadata).isHandRaised && (
-                                <Badge colorScheme="yellow">Hand Raised</Badge>
-                              )}
-                            </HStack>
+                            <Text fontWeight="medium">
+                              {participant.username} {participant.userId === user?.id ? '(You)' : ''}
+                            </Text>
+                            <Text fontSize="xs" color="gray.500">
+                              Joined {new Date(participant.joinedAt).toLocaleTimeString()}
+                            </Text>
                           </Box>
                         </Flex>
                       </ListItem>

@@ -61,6 +61,11 @@ export const API_ENDPOINTS = {
   token: {
     get: `/api/token/get-token`,
   },
+  meetings: {
+    join: `/api/meetings/:meetingId/join`,
+    leave: `/api/meetings/:meetingId/leave`,
+    participants: `/api/meetings/:meetingId/participants`,
+  },
 };
 
 export default API_ENDPOINTS; 
