@@ -384,171 +384,156 @@ const Meeting: React.FC = () => {
     }
   };
 
-  // Update initializeMedia function with better error handling and timeouts
+  // Add this function to handle creating peer connections with existing participants
+  const createPeerConnections = async (participants: { userId: string; socketId: string; username: string }[]) => {
+    console.log('Creating peer connections with existing participants:', participants);
+    
+    try {
+      const stream = await ensureStreamIsReady();
+      
+      for (const participant of participants) {
+        console.log('Creating peer connection with:', participant.username);
+        const peer = await createPeer(true, participant.socketId);
+        peersRef.current.push({
+          peerId: participant.userId,
+          peer
+        });
+      }
+    } catch (err) {
+      console.error('Error creating peer connections:', err);
+      setError('Failed to connect to other participants. Please try refreshing.');
+    }
+  };
+
+  // Update the socket event handlers in useEffect
+  useEffect(() => {
+    console.log('Setting up socket event handlers...');
+    
+    // Handle existing participants list
+    socketRef.current?.on('existing-participants', async (participants) => {
+      console.log('Received existing participants:', participants);
+      await createPeerConnections(participants);
+    });
+
+    // Handle new user joining
+    socketRef.current?.on('user-joined', async ({ userId, username, socketId }) => {
+      console.log('New user joined:', { userId, username, socketId });
+      
+      try {
+        const stream = await ensureStreamIsReady();
+        const peer = await createPeer(false, socketId);
+        
+        peersRef.current.push({
+          peerId: userId,
+          peer
+        });
+
+        // Add the new participant to the list
+        setParticipants(prev => [
+          ...prev,
+          {
+            id: userId,
+            username,
+            isAudioEnabled: true,
+            isVideoEnabled: true,
+            isScreenSharing: false,
+            isHandRaised: false
+          }
+        ]);
+      } catch (err) {
+        console.error('Error handling new participant:', err);
+      }
+    });
+
+    // Handle user stream ready
+    socketRef.current?.on('user-stream-ready', ({ userId, socketId }) => {
+      console.log('User stream ready:', { userId, socketId });
+      const peerConnection = peersRef.current.find(p => p.peerId === userId);
+      if (peerConnection?.peer) {
+        // The peer will automatically start signaling when it's created
+        console.log('Peer connection exists, waiting for automatic signaling');
+      } else {
+        console.log('Creating new peer connection for ready user');
+        createPeer(true, socketId).then(peer => {
+          peersRef.current.push({
+            peerId: userId,
+            peer
+          });
+        }).catch(err => {
+          console.error('Error creating peer for ready user:', err);
+        });
+      }
+    });
+
+    // Handle peer signaling
+    socketRef.current?.on('peer-signal', ({ signal, callerId }) => {
+      console.log('Received peer signal from:', callerId);
+      const item = peersRef.current.find(p => p.peerId === callerId);
+      if (item) {
+        item.peer.signal(signal);
+      }
+    });
+
+    // Clean up function
+    return () => {
+      socketRef.current?.off('existing-participants');
+      socketRef.current?.off('user-joined');
+      socketRef.current?.off('user-stream-ready');
+      socketRef.current?.off('peer-signal');
+    };
+  }, []);
+
+  // Update the initializeMedia function
   const initializeMedia = async () => {
     console.log('Starting media initialization...');
     try {
       setIsLoading(true);
       setError(null);
 
-      // Add timeout for media initialization
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Media initialization timed out')), 30000);
+      const stream = await ensureStreamIsReady();
+      
+      if (localVideoRef.current) {
+        console.log('Initializing local video...');
+        await initializeLocalVideo(stream);
+        console.log('Local video initialized successfully');
+      }
+
+      // Connect to socket server
+      console.log('Connecting to socket server:', SOCKET_SERVER);
+      socketRef.current = io(SOCKET_SERVER, {
+        withCredentials: true,
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+        timeout: 20000,
+        forceNew: true
       });
 
-      // Race between media initialization and timeout
-      await Promise.race([
-        (async () => {
-          console.log('Requesting media permissions...');
-          let stream;
-          for (let i = 0; i < 3; i++) {
-            try {
-              stream = await getLocalStream();
-              console.log('Successfully got local stream on attempt', i + 1);
-              break;
-            } catch (err) {
-              console.error(`Attempt ${i + 1} failed:`, err);
-              if (i === 2) throw err;
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-          }
+      // Add socket connection logging
+      socketRef.current.on('connect', () => {
+        console.log('Socket connected successfully:', socketRef.current?.id);
+        
+        // Join the room after socket connection
+        socketRef.current?.emit('join-room', {
+          roomId: meetingId,
+          userId: user?.id,
+          username: user?.username
+        });
 
-          if (!stream) {
-            throw new Error('Failed to get local stream after 3 attempts');
-          }
+        // Notify that our stream is ready
+        socketRef.current?.emit('stream-ready', {
+          roomId: meetingId,
+          userId: user?.id
+        });
 
-          streamRef.current = stream;
-          
-          if (localVideoRef.current) {
-            console.log('Initializing local video...');
-            await initializeLocalVideo(stream);
-            console.log('Local video initialized successfully');
-          }
+        setIsLoading(false);
+      });
 
-          // Connect to socket server
-          console.log('Connecting to socket server:', SOCKET_SERVER);
-          socketRef.current = io(SOCKET_SERVER, {
-            withCredentials: true,
-            transports: ['websocket', 'polling'],
-            reconnection: true,
-            reconnectionAttempts: 5,
-            reconnectionDelay: 1000,
-            timeout: 20000,
-            forceNew: true
-          });
-
-          // Add socket connection logging
-          socketRef.current.on('connect', () => {
-            console.log('Socket connected successfully:', socketRef.current?.id);
-            setIsLoading(false);
-          });
-
-          socketRef.current.on('connect_error', (error) => {
-            console.error('Socket connection error:', error);
-            throw new Error(`Failed to connect to meeting server: ${error.message}`);
-          });
-
-          socketRef.current.on('user-joined', async ({ userId, username, socketId }: { userId: string; username: string; socketId: string }) => {
-            console.log('User joined:', userId, username, socketId);
-            
-            try {
-              const peer = await createPeer(true, socketId);
-              peersRef.current.push({
-                peerId: userId,
-                peer
-              });
-            } catch (err) {
-              console.error('Error in user-joined handler:', err);
-            }
-          });
-
-          socketRef.current.on('room-users', (users: RoomUser[]) => {
-            console.log('Room users:', users);
-            // Filter out the current user from the participants list
-            const otherUsers = users.filter(roomUser => roomUser.userId !== user?.id);
-            setParticipants(otherUsers.map(roomUser => ({
-              id: roomUser.userId,
-              username: roomUser.username || 'Anonymous',
-              isAudioEnabled: roomUser.isAudioEnabled,
-              isVideoEnabled: roomUser.isVideoEnabled,
-              isScreenSharing: roomUser.isScreenSharing,
-              isHandRaised: roomUser.isHandRaised
-            })));
-          });
-
-          socketRef.current.on('user-disconnected', (userId: string) => {
-            console.log('User disconnected:', userId);
-            setParticipants(prev => prev.filter(p => p.id !== userId));
-          });
-
-          socketRef.current.on('user-media-toggle', ({ userId, type, enabled }) => {
-            setParticipants(prev => prev.map(p => {
-              if (p.id === userId) {
-                return {
-                  ...p,
-                  isAudioEnabled: type === 'audio' ? enabled : p.isAudioEnabled,
-                  isVideoEnabled: type === 'video' ? enabled : p.isVideoEnabled
-                };
-              }
-              return p;
-            }));
-          });
-
-          socketRef.current.on('user-screen-share', ({ userId, isSharing }) => {
-            setParticipants(prev => prev.map(p => {
-              if (p.id === userId) {
-                return { ...p, isScreenSharing: isSharing };
-              }
-              return p;
-            }));
-          });
-
-          socketRef.current.on('user-hand-raised', ({ userId, isRaised }) => {
-            setParticipants(prev => prev.map(p => {
-              if (p.id === userId) {
-                return { ...p, isHandRaised: isRaised };
-              }
-              return p;
-            }));
-          });
-
-          socketRef.current.on('peer-signal', ({ signal, callerId }) => {
-            const item = peersRef.current.find(p => p.peerId === callerId);
-            if (item) {
-              item.peer.signal(signal);
-            }
-          });
-
-          socketRef.current.on('receive-signal', async ({ signal, id }: PeerSignalEvent) => {
-            console.log('Received signal from:', id);
-            
-            try {
-              let existingPeer = peersRef.current.find(p => p.peerId === id)?.peer;
-              
-              if (!existingPeer) {
-                const newPeer = await createPeer(false, id);
-                peersRef.current.push({
-                  peerId: id,
-                  peer: newPeer
-                });
-                existingPeer = newPeer;
-              }
-
-              existingPeer.signal(signal);
-            } catch (err) {
-              console.error('Error in receive-signal handler:', err);
-            }
-          });
-
-          // Add chat message socket events
-          socketRef.current.on('chat-message', (message: ChatMessage) => {
-            console.log('Received chat message:', message);
-            setMessages(prev => [...prev, message]);
-          });
-
-        })(),
-        timeoutPromise
-      ]);
+      socketRef.current.on('connect_error', (error) => {
+        console.error('Socket connection error:', error);
+        throw new Error(`Failed to connect to meeting server: ${error.message}`);
+      });
 
     } catch (error) {
       console.error('Error in initializeMedia:', error);

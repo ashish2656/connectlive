@@ -40,7 +40,6 @@ const initializeSocket = (server) => {
         const meeting = await Meeting.findOne({ meetingId: roomId, isActive: true });
         
         if (!meeting) {
-          // If meeting doesn't exist and user is trying to join
           socket.emit('room-error', { message: 'Invalid meeting code or meeting has ended.' });
           return;
         }
@@ -80,20 +79,29 @@ const initializeSocket = (server) => {
         // Log room participants
         console.log(`Room ${roomId} participants:`, Array.from(roomParticipants.entries()));
 
-        // Notify others in the room with socket ID
+        // Get all other participants in the room
+        const otherParticipants = Array.from(roomParticipants.entries())
+          .filter(([id]) => id !== userId)
+          .map(([id, user]) => ({
+            userId: id,
+            socketId: user.socketId,
+            username: user.username
+          }));
+
+        // Send the list of other participants to the newly joined user
+        socket.emit('existing-participants', otherParticipants);
+        console.log('Sent existing participants to new user:', otherParticipants);
+
+        // Notify others in the room about the new user
         socket.to(roomId).emit('user-joined', {
           userId,
           username,
-          socketId: socket.id,
-          isAudioEnabled: true,
-          isVideoEnabled: true,
-          isScreenSharing: false,
-          isHandRaised: false
+          socketId: socket.id
         });
 
-        // Send list of connected users to the new participant
-        const participants = Array.from(roomParticipants.entries()).map(([userId, user]) => ({
-          userId,
+        // Send updated participants list to everyone
+        const allParticipants = Array.from(roomParticipants.entries()).map(([id, user]) => ({
+          userId: id,
           username: user.username,
           socketId: user.socketId,
           isAudioEnabled: user.isAudioEnabled,
@@ -102,16 +110,38 @@ const initializeSocket = (server) => {
           isHandRaised: user.isHandRaised
         }));
         
-        // Emit room users to everyone in the room
-        io.to(roomId).emit('room-users', participants);
-        console.log(`Sent participants list to room ${roomId}:`, participants);
+        io.to(roomId).emit('room-users', allParticipants);
+        console.log(`Updated room ${roomId} participants:`, allParticipants);
 
-        // Signal the existing participants to create peer connections with the new user
-        socket.to(roomId).emit('receive-signal', { signal: null, id: userId });
       } catch (error) {
         console.error('Error joining room:', error);
         socket.emit('room-error', { message: 'Failed to join meeting. Please try again.' });
       }
+    });
+
+    // Handle WebRTC signaling
+    socket.on('peer-signal', ({ userToSignal, callerId, signal }) => {
+      console.log('Received peer signal:', {
+        from: callerId,
+        to: userToSignal,
+        signalType: signal?.type || 'unknown'
+      });
+
+      const targetSocket = Array.from(io.sockets.sockets.values())
+        .find(s => s.id === userToSignal);
+
+      if (targetSocket) {
+        console.log('Forwarding signal to target socket:', userToSignal);
+        targetSocket.emit('peer-signal', { signal, callerId });
+      } else {
+        console.error('Target socket not found:', userToSignal);
+      }
+    });
+
+    // Handle stream ready event
+    socket.on('stream-ready', ({ roomId, userId }) => {
+      console.log(`User ${userId} stream is ready in room ${roomId}`);
+      socket.to(roomId).emit('user-stream-ready', { userId, socketId: socket.id });
     });
 
     socket.on('disconnect', () => {
@@ -212,14 +242,6 @@ const initializeSocket = (server) => {
           }));
           io.to(roomId).emit('room-users', updatedParticipants);
         }
-      }
-    });
-
-    // Handle WebRTC signaling
-    socket.on('peer-signal', ({ userToSignal, callerId, signal }) => {
-      const targetSocket = io.sockets.sockets.get(userToSignal);
-      if (targetSocket) {
-        targetSocket.emit('peer-signal', { signal, callerId });
       }
     });
 
